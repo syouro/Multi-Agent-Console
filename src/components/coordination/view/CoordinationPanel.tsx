@@ -185,7 +185,9 @@ export default function CoordinationPanel({
                                             {(item.from || 'unknown')} -&gt; {(item.to || 'unknown')}
                                         </div>
                                         {item.message && (
-                                            <div className="mt-1 text-sm text-foreground/90">{item.message}</div>
+                                            <div className={`mt-1 text-sm ${item.type === 'manual_attention_required' ? 'font-medium text-amber-700' : 'text-foreground/90'}`}>
+                                                {item.message}
+                                            </div>
                                         )}
                                         <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
                                             {item.provider && <span>Provider: {item.provider}</span>}
@@ -262,6 +264,11 @@ export default function CoordinationPanel({
                                             </option>
                                         ))}
                                     </select>
+                                    {target === 'claude' && (
+                                        <div className="mt-1 text-[11px] text-amber-600">
+                                            Claude handoffs currently fall back to manual attention unless the target session is running in a PTY-backed shell.
+                                        </div>
+                                    )}
                                 </label>
 
                                 <label className="block">
