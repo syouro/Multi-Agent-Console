@@ -67,6 +67,7 @@ import geminiRoutes from './routes/gemini.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './database/db.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
+import { appendPantheonEvent, syncPantheonWorkspace, loadPantheonEvents } from './pantheon/events.js';
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
 
@@ -1578,6 +1579,50 @@ function handleChatConnection(ws) {
                 writer.send({
                     type: 'active-sessions',
                     sessions: activeSessions
+                });
+            } else if (data.type === 'pantheon:sync') {
+                const workspacePath = data.workspacePath || data.projectPath;
+                const payload = await syncPantheonWorkspace(workspacePath);
+                writer.send({
+                    type: 'pantheon:state',
+                    workspacePath: payload.workspacePath,
+                    inboxPath: payload.inboxPath,
+                    whiteboardPath: payload.whiteboardPath,
+                    state: payload.state,
+                    events: payload.events
+                });
+            } else if (data.type === 'pantheon:list-events') {
+                const workspacePath = data.workspacePath || data.projectPath;
+                const events = await loadPantheonEvents(workspacePath);
+                writer.send({
+                    type: 'pantheon:event-list',
+                    workspacePath,
+                    events
+                });
+            } else if (data.type === 'pantheon:create-handoff') {
+                const workspacePath = data.workspacePath || data.projectPath;
+                const result = await appendPantheonEvent(workspacePath, {
+                    type: 'handoff',
+                    provider: data.provider || null,
+                    sessionId: data.sessionId || null,
+                    from: data.from || 'human',
+                    to: data.to || null,
+                    message: data.message || '',
+                    artifacts: data.artifacts || [],
+                    status: data.status || 'queued'
+                });
+
+                const pantheonMessage = JSON.stringify({
+                    type: 'pantheon:event',
+                    workspacePath: result.event.workspacePath,
+                    event: result.event,
+                    state: result.state
+                });
+
+                connectedClients.forEach(client => {
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.send(pantheonMessage);
+                    }
                 });
             }
         } catch (error) {
