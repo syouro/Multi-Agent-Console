@@ -14,6 +14,7 @@ import { TaskMasterPanel } from '../../task-master';
 import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
 import ErrorBoundary from './ErrorBoundary';
+import CoordinationPanel from '../../coordination/view/CoordinationPanel';
 
 type TaskMasterContextValue = {
   currentProject?: Project | null;
@@ -152,6 +153,18 @@ function MainContent({
           {activeTab === 'git' && (
             <div className="h-full overflow-hidden">
               <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
+            </div>
+          )}
+
+          {activeTab === 'coordination' && (
+            <div className="h-full overflow-hidden">
+              <CoordinationPanel
+                selectedProject={selectedProject}
+                selectedSession={selectedSession}
+                sendMessage={sendMessage}
+                latestMessage={latestMessage}
+                isConnected={Boolean(ws)}
+              />
             </div>
           )}
 

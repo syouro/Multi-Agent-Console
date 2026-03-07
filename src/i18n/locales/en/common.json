@@ -22,6 +22,7 @@
     "shell": "Shell",
     "files": "Files",
     "git": "Source Control",
+    "coordination": "Coordination",
     "tasks": "Tasks"
   },
   "status": {

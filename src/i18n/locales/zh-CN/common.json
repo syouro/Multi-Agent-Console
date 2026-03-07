@@ -22,6 +22,7 @@
     "shell": "终端",
     "files": "文件",
     "git": "源代码管理",
+    "coordination": "协同",
     "tasks": "任务"
   },
   "status": {

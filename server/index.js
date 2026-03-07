@@ -68,6 +68,7 @@ import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './d
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
 import { appendPantheonEvent, syncPantheonWorkspace, loadPantheonEvents } from './pantheon/events.js';
+import { createPantheonHandoff } from './pantheon/bus.js';
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
 
@@ -1601,8 +1602,7 @@ function handleChatConnection(ws) {
                 });
             } else if (data.type === 'pantheon:create-handoff') {
                 const workspacePath = data.workspacePath || data.projectPath;
-                const result = await appendPantheonEvent(workspacePath, {
-                    type: 'handoff',
+                const result = await createPantheonHandoff(workspacePath, {
                     provider: data.provider || null,
                     sessionId: data.sessionId || null,
                     from: data.from || 'human',
@@ -1616,7 +1616,8 @@ function handleChatConnection(ws) {
                     type: 'pantheon:event',
                     workspacePath: result.event.workspacePath,
                     event: result.event,
-                    state: result.state
+                    state: result.state,
+                    prompt: result.prompt
                 });
 
                 connectedClients.forEach(client => {

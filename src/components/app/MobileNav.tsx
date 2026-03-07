@@ -1,4 +1,4 @@
-import { MessageSquare, Folder, Terminal, GitBranch, ClipboardCheck } from 'lucide-react';
+import { MessageSquare, Folder, Terminal, GitBranch, ClipboardCheck, Network } from 'lucide-react';
 import { Dispatch, SetStateAction } from 'react';
 import { useTasksSettings } from '../../contexts/TasksSettingsContext';
 import { AppTab } from '../../types/app';
@@ -37,6 +37,12 @@ export default function MobileNav({ activeTab, setActiveTab, isInputFocused }: M
       icon: GitBranch,
       label: 'Git',
       onClick: () => setActiveTab('git')
+    },
+    {
+      id: 'coordination',
+      icon: Network,
+      label: 'Coord',
+      onClick: () => setActiveTab('coordination')
     },
     ...(shouldShowTasksTab ? [{
       id: 'tasks',
