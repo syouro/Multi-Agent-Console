@@ -45,7 +45,7 @@ import fetch from 'node-fetch';
 import mime from 'mime-types';
 
 import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
-import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
+import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter, subscribeToClaudeApprovalEvents } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions } from './openai-codex.js';
 import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions } from './gemini-cli.js';
@@ -69,6 +69,7 @@ import { validateApiKey, authenticateToken, authenticateWebSocket } from './midd
 import { IS_PLATFORM } from './constants/config.js';
 import { appendPantheonEvent, syncPantheonWorkspace, loadPantheonEvents } from './pantheon/events.js';
 import { createPantheonHandoff } from './pantheon/bus.js';
+import { normalizeClaudeApprovalDecision, normalizeClaudeApprovalRequest } from './pantheon/approvals.js';
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
 
@@ -94,6 +95,67 @@ let projectsWatchers = [];
 let projectsWatcherDebounceTimer = null;
 const connectedClients = new Set();
 let isGetProjectsRunning = false; // Flag to prevent reentrant calls
+
+function broadcastPantheonPayload(payload) {
+    const serialized = JSON.stringify(payload);
+    connectedClients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(serialized);
+        }
+    });
+}
+
+async function broadcastPantheonEvent(workspacePath, eventInput, extra = {}) {
+    const result = await appendPantheonEvent(workspacePath, eventInput);
+    broadcastPantheonPayload({
+        type: 'pantheon:event',
+        workspacePath: result.event.workspacePath,
+        event: result.event,
+        state: result.state,
+        ...extra
+    });
+    return result;
+}
+
+async function findProjectByWorkspacePath(workspacePath) {
+    const projects = await getProjects();
+    return projects.find((project) => {
+        const projectPath = project.path || project.fullPath;
+        return projectPath === workspacePath;
+    }) || null;
+}
+
+async function findWorkspacePathForClaudeSession(sessionId) {
+    if (!sessionId) {
+        return null;
+    }
+
+    const projects = await getProjects();
+    for (const project of projects) {
+        const sessions = project.sessions || [];
+        if (sessions.some((session) => session.id === sessionId)) {
+            return project.path || project.fullPath || null;
+        }
+    }
+
+    return null;
+}
+
+subscribeToClaudeApprovalEvents(async (approvalEvent) => {
+    const workspacePath = await findWorkspacePathForClaudeSession(approvalEvent.sessionId);
+    if (!workspacePath) {
+        return;
+    }
+
+    if (approvalEvent.type === 'requested') {
+        await broadcastPantheonEvent(workspacePath, normalizeClaudeApprovalRequest(approvalEvent));
+        return;
+    }
+
+    if (approvalEvent.type === 'cancelled' || approvalEvent.type === 'resolved') {
+        await broadcastPantheonEvent(workspacePath, normalizeClaudeApprovalDecision(approvalEvent));
+    }
+});
 
 // Broadcast progress to all connected WebSocket clients
 function broadcastProgress(progress) {
@@ -1453,35 +1515,6 @@ function handleChatConnection(ws) {
     ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
-            const broadcastPantheonPayload = (payload) => {
-                const serialized = JSON.stringify(payload);
-                connectedClients.forEach(client => {
-                    if (client.readyState === WebSocket.OPEN) {
-                        client.send(serialized);
-                    }
-                });
-            };
-
-            const sendPantheonEvent = async (workspacePath, eventInput, extra = {}) => {
-                const result = await appendPantheonEvent(workspacePath, eventInput);
-                broadcastPantheonPayload({
-                    type: 'pantheon:event',
-                    workspacePath: result.event.workspacePath,
-                    event: result.event,
-                    state: result.state,
-                    ...extra
-                });
-                return result;
-            };
-
-            const findProjectByWorkspacePath = async (workspacePath) => {
-                const projects = await getProjects();
-                return projects.find((project) => {
-                    const projectPath = project.path || project.fullPath;
-                    return projectPath === workspacePath;
-                }) || null;
-            };
-
             const getProviderSessions = (project, provider) => {
                 if (!project) {
                     return [];
@@ -1705,7 +1738,7 @@ function handleChatConnection(ws) {
                     );
 
                     if (injectionResult.delivered) {
-                        await sendPantheonEvent(result.event.workspacePath, {
+                        await broadcastPantheonEvent(result.event.workspacePath, {
                             type: 'handoff_delivery',
                             provider: result.event.to,
                             sessionId: targetSessionId,
@@ -1716,7 +1749,7 @@ function handleChatConnection(ws) {
                             status: 'delivered'
                         });
                     } else {
-                        await sendPantheonEvent(result.event.workspacePath, {
+                        await broadcastPantheonEvent(result.event.workspacePath, {
                             type: 'manual_attention_required',
                             provider: result.event.to,
                             sessionId: targetSessionId,
@@ -1728,6 +1761,23 @@ function handleChatConnection(ws) {
                         });
                     }
                 }
+            } else if (data.type === 'pantheon:resolve-approval') {
+                if (!data.requestId) {
+                    throw new Error('requestId is required');
+                }
+
+                resolveToolApproval(data.requestId, {
+                    allow: Boolean(data.allow),
+                    updatedInput: data.updatedInput,
+                    message: data.message,
+                    rememberEntry: data.rememberEntry
+                });
+
+                writer.send({
+                    type: 'pantheon:approval-updated',
+                    requestId: data.requestId,
+                    status: data.allow ? 'approved' : 'denied'
+                });
             }
         } catch (error) {
             console.error('[ERROR] Chat WebSocket error:', error.message);

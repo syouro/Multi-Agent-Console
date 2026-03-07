@@ -21,6 +21,7 @@ import { CLAUDE_MODELS } from '../shared/modelConstants.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
+const approvalListeners = new Set();
 
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
 
@@ -92,8 +93,37 @@ function waitForToolApproval(requestId, options = {}) {
 function resolveToolApproval(requestId, decision) {
   const resolver = pendingToolApprovals.get(requestId);
   if (resolver) {
+    emitApprovalEvent('resolved', {
+      requestId,
+      sessionId: resolver._sessionId || null,
+      toolName: resolver._toolName || 'UnknownTool',
+      input: resolver._input,
+      context: resolver._context,
+      decision,
+      receivedAt: resolver._receivedAt || new Date()
+    });
     resolver(decision);
   }
+}
+
+function emitApprovalEvent(type, payload) {
+  for (const listener of approvalListeners) {
+    try {
+      listener({
+        type,
+        ...payload
+      });
+    } catch (error) {
+      console.error('[Claude approvals] listener error:', error);
+    }
+  }
+}
+
+function subscribeToClaudeApprovalEvents(listener) {
+  approvalListeners.add(listener);
+  return () => {
+    approvalListeners.delete(listener);
+  };
 }
 
 // Match stored permission entries against a tool + input combo.
@@ -514,6 +544,14 @@ async function queryClaudeSDK(command, options = {}, ws) {
         input,
         sessionId: capturedSessionId || sessionId || null
       });
+      emitApprovalEvent('requested', {
+        requestId,
+        sessionId: capturedSessionId || sessionId || null,
+        toolName,
+        input,
+        context,
+        receivedAt: new Date()
+      });
 
       const decision = await waitForToolApproval(requestId, {
         timeoutMs: requiresInteraction ? 0 : undefined,
@@ -530,6 +568,15 @@ async function queryClaudeSDK(command, options = {}, ws) {
             requestId,
             reason,
             sessionId: capturedSessionId || sessionId || null
+          });
+          emitApprovalEvent('cancelled', {
+            requestId,
+            sessionId: capturedSessionId || sessionId || null,
+            toolName,
+            input,
+            context,
+            reason,
+            receivedAt: new Date()
           });
         }
       });
@@ -769,5 +816,6 @@ export {
   getActiveClaudeSDKSessions,
   resolveToolApproval,
   getPendingApprovalsForSession,
-  reconnectSessionWriter
+  reconnectSessionWriter,
+  subscribeToClaudeApprovalEvents
 };

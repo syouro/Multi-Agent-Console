@@ -20,6 +20,13 @@ type PantheonState = {
     activeOwner?: string | null;
     blockers?: string[];
     relatedArtifacts?: string[];
+    pendingApprovals?: Array<{
+        requestId: string;
+        toolName?: string | null;
+        summary?: string | null;
+        sessionId?: string | null;
+        provider?: string | null;
+    }>;
 };
 
 type CoordinationPanelProps = {
@@ -241,6 +248,43 @@ export default function CoordinationPanel({
                                     ))
                                 ) : (
                                     <div className="text-sm text-muted-foreground">None</div>
+                                )}
+                            </div>
+                        </section>
+
+                        <section className="rounded-lg border border-border/70 bg-card px-3 py-3">
+                            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Approval Center</div>
+                            <div className="mt-2 space-y-3">
+                                {(state?.pendingApprovals?.length || 0) > 0 ? (
+                                    state?.pendingApprovals?.map((approval) => (
+                                        <div key={approval.requestId} className="rounded-md border border-amber-300 bg-amber-50 px-3 py-3">
+                                            <div className="text-sm font-medium text-amber-900">
+                                                {approval.summary || approval.toolName || 'Pending approval'}
+                                            </div>
+                                            <div className="mt-1 text-xs text-amber-800">
+                                                Provider: {approval.provider || 'claude'}
+                                                {approval.sessionId ? ` · Session: ${approval.sessionId}` : ''}
+                                            </div>
+                                            <div className="mt-3 flex flex-wrap gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => sendMessage({ type: 'pantheon:resolve-approval', requestId: approval.requestId, allow: true })}
+                                                    className="inline-flex items-center rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-amber-700"
+                                                >
+                                                    Approve
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => sendMessage({ type: 'pantheon:resolve-approval', requestId: approval.requestId, allow: false, message: 'Denied from Pantheon coordination panel' })}
+                                                    className="inline-flex items-center rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-50"
+                                                >
+                                                    Deny
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="text-sm text-muted-foreground">No pending Claude approvals.</div>
                                 )}
                             </div>
                         </section>
