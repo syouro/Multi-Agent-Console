@@ -1453,6 +1453,80 @@ function handleChatConnection(ws) {
     ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
+            const broadcastPantheonPayload = (payload) => {
+                const serialized = JSON.stringify(payload);
+                connectedClients.forEach(client => {
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.send(serialized);
+                    }
+                });
+            };
+
+            const sendPantheonEvent = async (workspacePath, eventInput, extra = {}) => {
+                const result = await appendPantheonEvent(workspacePath, eventInput);
+                broadcastPantheonPayload({
+                    type: 'pantheon:event',
+                    workspacePath: result.event.workspacePath,
+                    event: result.event,
+                    state: result.state,
+                    ...extra
+                });
+                return result;
+            };
+
+            const findProjectByWorkspacePath = async (workspacePath) => {
+                const projects = await getProjects();
+                return projects.find((project) => {
+                    const projectPath = project.path || project.fullPath;
+                    return projectPath === workspacePath;
+                }) || null;
+            };
+
+            const getProviderSessions = (project, provider) => {
+                if (!project) {
+                    return [];
+                }
+
+                if (provider === 'codex') {
+                    return project.codexSessions || [];
+                }
+
+                if (provider === 'gemini') {
+                    return project.geminiSessions || [];
+                }
+
+                if (provider === 'cursor') {
+                    return project.cursorSessions || [];
+                }
+
+                return project.sessions || [];
+            };
+
+            const getLatestSessionId = (project, provider) => {
+                const sessions = [...getProviderSessions(project, provider)];
+                sessions.sort((left, right) => {
+                    const leftTime = new Date(left.updated_at || left.lastActivity || left.createdAt || left.created_at || 0).getTime();
+                    const rightTime = new Date(right.updated_at || right.lastActivity || right.createdAt || right.created_at || 0).getTime();
+                    return rightTime - leftTime;
+                });
+
+                return sessions[0]?.id || null;
+            };
+
+            const injectPromptIntoProviderSession = (workspacePath, provider, sessionId, prompt) => {
+                if (!sessionId) {
+                    return { delivered: false, reason: 'No target session found' };
+                }
+
+                const ptySessionKey = `${workspacePath}_${sessionId}`;
+                const targetSession = ptySessionsMap.get(ptySessionKey);
+                if (!targetSession?.pty?.write) {
+                    return { delivered: false, reason: 'Target provider session is not currently attached to a shell PTY' };
+                }
+
+                targetSession.pty.write(`${prompt}\n`);
+                return { delivered: true, sessionId, provider };
+            };
 
             if (data.type === 'claude-command') {
                 console.log('[DEBUG] User message:', data.command || '[Continue/Resume]');
@@ -1612,7 +1686,7 @@ function handleChatConnection(ws) {
                     status: data.status || 'queued'
                 });
 
-                const pantheonMessage = JSON.stringify({
+                broadcastPantheonPayload({
                     type: 'pantheon:event',
                     workspacePath: result.event.workspacePath,
                     event: result.event,
@@ -1620,11 +1694,40 @@ function handleChatConnection(ws) {
                     prompt: result.prompt
                 });
 
-                connectedClients.forEach(client => {
-                    if (client.readyState === WebSocket.OPEN) {
-                        client.send(pantheonMessage);
+                if (result.event.to && result.event.to !== 'human' && result.event.to !== 'all') {
+                    const project = await findProjectByWorkspacePath(result.event.workspacePath);
+                    const targetSessionId = getLatestSessionId(project, result.event.to);
+                    const injectionResult = injectPromptIntoProviderSession(
+                        result.event.workspacePath,
+                        result.event.to,
+                        targetSessionId,
+                        result.prompt
+                    );
+
+                    if (injectionResult.delivered) {
+                        await sendPantheonEvent(result.event.workspacePath, {
+                            type: 'handoff_delivery',
+                            provider: result.event.to,
+                            sessionId: targetSessionId,
+                            from: result.event.from,
+                            to: result.event.to,
+                            message: `Delivered handoff to ${result.event.to} session ${targetSessionId}`,
+                            artifacts: result.event.artifacts,
+                            status: 'delivered'
+                        });
+                    } else {
+                        await sendPantheonEvent(result.event.workspacePath, {
+                            type: 'manual_attention_required',
+                            provider: result.event.to,
+                            sessionId: targetSessionId,
+                            from: result.event.from,
+                            to: result.event.to,
+                            message: injectionResult.reason,
+                            artifacts: result.event.artifacts,
+                            status: 'attention'
+                        });
                     }
-                });
+                }
             }
         } catch (error) {
             console.error('[ERROR] Chat WebSocket error:', error.message);

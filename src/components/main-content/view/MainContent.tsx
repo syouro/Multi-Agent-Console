@@ -35,6 +35,7 @@ function MainContent({
   ws,
   sendMessage,
   latestMessage,
+  isConnected,
   isMobile,
   onMenuClick,
   isLoading,
@@ -163,7 +164,7 @@ function MainContent({
                 selectedSession={selectedSession}
                 sendMessage={sendMessage}
                 latestMessage={latestMessage}
-                isConnected={Boolean(ws)}
+                isConnected={isConnected}
               />
             </div>
           )}

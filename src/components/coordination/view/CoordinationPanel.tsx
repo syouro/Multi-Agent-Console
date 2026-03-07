@@ -205,6 +205,13 @@ export default function CoordinationPanel({
                     </div>
                     <div className="space-y-4 overflow-y-auto px-4 py-4">
                         <section className="rounded-lg border border-border/70 bg-card px-3 py-3">
+                            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Connection</div>
+                            <div className="mt-2 text-sm text-foreground">
+                                {isConnected ? 'Connected' : 'Disconnected'}
+                            </div>
+                        </section>
+
+                        <section className="rounded-lg border border-border/70 bg-card px-3 py-3">
                             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Current Task</div>
                             <div className="mt-2 text-sm text-foreground">{state?.currentTask || 'No active task'}</div>
                             <div className="mt-3 text-xs text-muted-foreground">Owner: {state?.activeOwner || 'Unassigned'}</div>
@@ -280,6 +287,7 @@ export default function CoordinationPanel({
 
                                 <button
                                     type="submit"
+                                    disabled={!isConnected || !message.trim()}
                                     className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
                                 >
                                     <Send className="h-3.5 w-3.5" />

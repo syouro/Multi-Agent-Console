@@ -132,6 +132,7 @@ export default function AppContent() {
           ws={ws}
           sendMessage={sendMessage}
           latestMessage={latestMessage}
+          isConnected={isConnected}
           isMobile={isMobile}
           onMenuClick={() => setSidebarOpen(true)}
           isLoading={isLoadingProjects}
