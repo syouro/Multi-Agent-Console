@@ -4,7 +4,7 @@
 </div>
 
 
-A desktop and mobile UI for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Cursor CLI](https://docs.cursor.com/en/cli/overview), [Codex](https://developers.openai.com/codex), and [Gemini CLI](https://geminicli.com/). It lets you inspect projects, resume sessions, open shell terminals, and coordinate multiple agent CLIs from one browser UI.
+A browser UI for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://developers.openai.com/codex), currently focused on shared session visibility, coordination handoffs, and MCP-based cross-agent messaging.
 
 <p align="center">
   <a href="https://github.com/siteboon/claudecodeui">Upstream Project</a> · <a href="https://github.com/siteboon/claudecodeui/issues">Upstream Issues</a> · <a href="CONTRIBUTING.md">Contributing</a>

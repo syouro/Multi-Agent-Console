@@ -1,7 +1,7 @@
 {
   "name": "multi-agent-console",
   "version": "1.23.2",
-  "description": "A browser UI for coordinating Claude Code, Codex, Gemini CLI, and other local agent CLIs",
+  "description": "A browser UI for Claude Code and Codex with session visibility, coordination handoffs, and MCP-based cross-agent messaging",
   "type": "module",
   "main": "server/index.js",
   "bin": {
