@@ -111,12 +111,14 @@ export function buildPantheonState(events = []) {
         blockers: [],
         relatedArtifacts: [],
         pendingApprovals: [],
+        registeredSessions: [],
         recentHandoffs: [],
         recentEvents: events.slice(-50)
     };
 
     const artifactSet = new Set();
     const pendingApprovals = new Map();
+    const registeredSessions = new Map();
 
     for (const event of events) {
         for (const artifact of normalizeArtifacts(event.artifacts)) {
@@ -128,6 +130,24 @@ export function buildPantheonState(events = []) {
                 state.currentTask = event.message || state.currentTask;
                 state.activeOwner = event.to || state.activeOwner;
                 state.recentHandoffs.push(event);
+                break;
+            case 'register_session':
+                if (event.provider && event.sessionId) {
+                    const entryId = `${event.provider}:${event.sessionId}`;
+                    registeredSessions.set(entryId, {
+                        entryId,
+                        provider: event.provider,
+                        sessionId: event.sessionId,
+                        title: event.summary || event.message || null,
+                        registeredAt: event.createdAt,
+                        projectName: typeof event.context?.projectName === 'string' ? event.context.projectName : null
+                    });
+                }
+                break;
+            case 'unregister_session':
+                if (event.provider && event.sessionId) {
+                    registeredSessions.delete(`${event.provider}:${event.sessionId}`);
+                }
                 break;
             case 'completion':
                 state.currentTask = event.message || state.currentTask;
@@ -157,6 +177,7 @@ export function buildPantheonState(events = []) {
 
     state.relatedArtifacts = Array.from(artifactSet).slice(0, 20);
     state.pendingApprovals = Array.from(pendingApprovals.values());
+    state.registeredSessions = Array.from(registeredSessions.values());
     state.recentHandoffs = state.recentHandoffs.slice(-10);
 
     return state;

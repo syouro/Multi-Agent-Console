@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { MutableRefObject } from 'react';
 import { api, authenticatedFetch } from '../../../utils/api';
 import type { ChatMessage, Provider } from '../types/types';
-import type { Project, ProjectSession } from '../../../types/app';
+import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import { safeLocalStorage } from '../utils/chatStorage';
 import {
   convertCursorSessionMessages,
@@ -34,6 +34,26 @@ interface UseChatSessionStateArgs {
 interface ScrollRestoreState {
   height: number;
   top: number;
+}
+
+function resolveSessionProvider(project: Project, session: ProjectSession): SessionProvider {
+  if (session.__provider) {
+    return session.__provider;
+  }
+
+  if (project.codexSessions?.some((candidate) => candidate.id === session.id)) {
+    return 'codex';
+  }
+
+  if (project.cursorSessions?.some((candidate) => candidate.id === session.id)) {
+    return 'cursor';
+  }
+
+  if (project.geminiSessions?.some((candidate) => candidate.id === session.id)) {
+    return 'gemini';
+  }
+
+  return 'claude';
 }
 
 export function useChatSessionState({
@@ -664,14 +684,15 @@ export function useChatSessionState({
       return;
     }
 
-    const sessionProvider = selectedSession.__provider || 'claude';
+    const sessionProvider = resolveSessionProvider(selectedProject, selectedSession);
     if (sessionProvider !== 'claude') {
+      setTokenBudget(null);
       return;
     }
 
     const fetchInitialTokenUsage = async () => {
       try {
-        const url = `/api/projects/${selectedProject.name}/sessions/${selectedSession.id}/token-usage`;
+        const url = `/api/projects/${selectedProject.name}/sessions/${selectedSession.id}/token-usage?provider=${sessionProvider}`;
         const response = await authenticatedFetch(url);
         if (response.ok) {
           const data = await response.json();

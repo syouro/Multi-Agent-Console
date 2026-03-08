@@ -68,7 +68,7 @@ import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './d
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
 import { appendPantheonEvent, syncPantheonWorkspace, loadPantheonEvents } from './pantheon/events.js';
-import { createPantheonHandoff } from './pantheon/bus.js';
+import { createPantheonHandoff, registerPantheonSession, unregisterPantheonSession } from './pantheon/bus.js';
 import { normalizeClaudeApprovalDecision, normalizeClaudeApprovalRequest } from './pantheon/approvals.js';
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
@@ -1561,6 +1561,60 @@ function handleChatConnection(ws) {
                 return { delivered: true, sessionId, provider };
             };
 
+            const deliverPantheonHandoff = async (workspacePath, handoffEvent, prompt, targetInfo) => {
+                const injectionResult = injectPromptIntoProviderSession(
+                    workspacePath,
+                    targetInfo.provider,
+                    targetInfo.sessionId,
+                    prompt
+                );
+
+                if (injectionResult.delivered) {
+                    await broadcastPantheonEvent(workspacePath, {
+                        type: 'handoff_delivery',
+                        provider: targetInfo.provider,
+                        sessionId: targetInfo.sessionId,
+                        from: handoffEvent.from,
+                        to: handoffEvent.to,
+                        message: `Delivered handoff to ${targetInfo.provider} session ${targetInfo.sessionId}`,
+                        artifacts: handoffEvent.artifacts,
+                        status: 'delivered'
+                    });
+                    return;
+                }
+
+                await broadcastPantheonEvent(workspacePath, {
+                    type: 'manual_attention_required',
+                    provider: targetInfo.provider,
+                    sessionId: targetInfo.sessionId,
+                    from: handoffEvent.from,
+                    to: handoffEvent.to,
+                    message: injectionResult.reason,
+                    artifacts: handoffEvent.artifacts,
+                    status: 'attention'
+                });
+            };
+
+            const resolvePantheonTarget = async (workspacePath, handoffEvent) => {
+                const context = handoffEvent.context && typeof handoffEvent.context === 'object' ? handoffEvent.context : {};
+                const requestedProvider = typeof context.targetProvider === 'string' ? context.targetProvider : handoffEvent.to;
+                const requestedSessionId = typeof context.targetSessionId === 'string' ? context.targetSessionId : null;
+
+                if (requestedProvider === 'human' || requestedProvider === 'all') {
+                    return { provider: requestedProvider, sessionId: requestedSessionId };
+                }
+
+                if (requestedProvider && requestedSessionId) {
+                    return { provider: requestedProvider, sessionId: requestedSessionId };
+                }
+
+                const project = await findProjectByWorkspacePath(workspacePath);
+                return {
+                    provider: requestedProvider,
+                    sessionId: getLatestSessionId(project, requestedProvider)
+                };
+            };
+
             if (data.type === 'claude-command') {
                 console.log('[DEBUG] User message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || 'Unknown');
@@ -1714,6 +1768,8 @@ function handleChatConnection(ws) {
                     sessionId: data.sessionId || null,
                     from: data.from || 'human',
                     to: data.to || null,
+                    targetProvider: data.targetProvider || data.to || null,
+                    targetSessionId: data.targetSessionId || null,
                     message: data.message || '',
                     artifacts: data.artifacts || [],
                     status: data.status || 'queued'
@@ -1727,40 +1783,56 @@ function handleChatConnection(ws) {
                     prompt: result.prompt
                 });
 
-                if (result.event.to && result.event.to !== 'human' && result.event.to !== 'all') {
-                    const project = await findProjectByWorkspacePath(result.event.workspacePath);
-                    const targetSessionId = getLatestSessionId(project, result.event.to);
-                    const injectionResult = injectPromptIntoProviderSession(
-                        result.event.workspacePath,
-                        result.event.to,
-                        targetSessionId,
-                        result.prompt
-                    );
+                if (result.event.to === 'all') {
+                    const registeredSessions = result.state?.registeredSessions || [];
+                    for (const entry of registeredSessions) {
+                        if (!entry.provider || !entry.sessionId || entry.provider === 'human') {
+                            continue;
+                        }
 
-                    if (injectionResult.delivered) {
-                        await broadcastPantheonEvent(result.event.workspacePath, {
-                            type: 'handoff_delivery',
-                            provider: result.event.to,
-                            sessionId: targetSessionId,
-                            from: result.event.from,
-                            to: result.event.to,
-                            message: `Delivered handoff to ${result.event.to} session ${targetSessionId}`,
-                            artifacts: result.event.artifacts,
-                            status: 'delivered'
-                        });
-                    } else {
-                        await broadcastPantheonEvent(result.event.workspacePath, {
-                            type: 'manual_attention_required',
-                            provider: result.event.to,
-                            sessionId: targetSessionId,
-                            from: result.event.from,
-                            to: result.event.to,
-                            message: injectionResult.reason,
-                            artifacts: result.event.artifacts,
-                            status: 'attention'
+                        await deliverPantheonHandoff(result.event.workspacePath, result.event, result.prompt, {
+                            provider: entry.provider,
+                            sessionId: entry.sessionId
                         });
                     }
+                } else if (result.event.to && result.event.to !== 'human') {
+                    const targetInfo = await resolvePantheonTarget(result.event.workspacePath, result.event);
+                    await deliverPantheonHandoff(result.event.workspacePath, result.event, result.prompt, targetInfo);
                 }
+            } else if (data.type === 'pantheon:register-session') {
+                const workspacePath = data.workspacePath || data.projectPath;
+                const result = await registerPantheonSession(workspacePath, {
+                    provider: data.provider || null,
+                    sessionId: data.sessionId || null,
+                    from: data.from || 'human',
+                    message: data.message || 'Registered Pantheon session',
+                    summary: data.summary || null,
+                    projectName: data.projectName || null
+                });
+
+                broadcastPantheonPayload({
+                    type: 'pantheon:event',
+                    workspacePath: result.event.workspacePath,
+                    event: result.event,
+                    state: result.state
+                });
+            } else if (data.type === 'pantheon:unregister-session') {
+                const workspacePath = data.workspacePath || data.projectPath;
+                const result = await unregisterPantheonSession(workspacePath, {
+                    provider: data.provider || null,
+                    sessionId: data.sessionId || null,
+                    from: data.from || 'human',
+                    message: data.message || 'Unregistered Pantheon session',
+                    summary: data.summary || null,
+                    projectName: data.projectName || null
+                });
+
+                broadcastPantheonPayload({
+                    type: 'pantheon:event',
+                    workspacePath: result.event.workspacePath,
+                    event: result.event,
+                    state: result.state
+                });
             } else if (data.type === 'pantheon:resolve-approval') {
                 if (!data.requestId) {
                     throw new Error('requestId is required');
@@ -2458,7 +2530,14 @@ app.get('/api/projects/:projectName/sessions/:sessionId/token-usage', authentica
             const sessionFilePath = await findSessionFile(codexSessionsDir);
 
             if (!sessionFilePath) {
-                return res.status(404).json({ error: 'Codex session file not found', sessionId: safeSessionId });
+                return res.json({
+                    used: 0,
+                    total: 0,
+                    breakdown: { input: 0, cacheCreation: 0, cacheRead: 0 },
+                    unavailable: true,
+                    message: 'Token usage data not available for this Codex session',
+                    sessionId: safeSessionId
+                });
             }
 
             // Read and parse the Codex JSONL file
@@ -2467,7 +2546,14 @@ app.get('/api/projects/:projectName/sessions/:sessionId/token-usage', authentica
                 fileContent = await fsPromises.readFile(sessionFilePath, 'utf8');
             } catch (error) {
                 if (error.code === 'ENOENT') {
-                    return res.status(404).json({ error: 'Session file not found', path: sessionFilePath });
+                    return res.json({
+                        used: 0,
+                        total: 0,
+                        breakdown: { input: 0, cacheCreation: 0, cacheRead: 0 },
+                        unavailable: true,
+                        message: 'Token usage data not available for this Codex session',
+                        sessionId: safeSessionId
+                    });
                 }
                 throw error;
             }
@@ -2533,7 +2619,14 @@ app.get('/api/projects/:projectName/sessions/:sessionId/token-usage', authentica
             fileContent = await fsPromises.readFile(jsonlPath, 'utf8');
         } catch (error) {
             if (error.code === 'ENOENT') {
-                return res.status(404).json({ error: 'Session file not found', path: jsonlPath });
+                return res.json({
+                    used: 0,
+                    total: 0,
+                    breakdown: { input: 0, cacheCreation: 0, cacheRead: 0 },
+                    unavailable: true,
+                    message: 'Token usage data not available for this Claude session',
+                    sessionId: safeSessionId
+                });
             }
             throw error; // Re-throw other errors to be caught by outer try-catch
         }

@@ -38,6 +38,10 @@ ${event.message || 'No task provided'}
 `;
 }
 
+function normalizeSessionProvider(provider) {
+    return normalizeTarget(provider);
+}
+
 export async function createPantheonHandoff(workspacePath, input = {}) {
     const to = normalizeTarget(input.to);
     if (!to) {
@@ -52,6 +56,10 @@ export async function createPantheonHandoff(workspacePath, input = {}) {
         to,
         message: typeof input.message === 'string' ? input.message.trim() : '',
         artifacts: buildArtifacts(input.artifacts),
+        context: {
+            targetSessionId: typeof input.targetSessionId === 'string' ? input.targetSessionId : null,
+            targetProvider: normalizeSessionProvider(input.targetProvider || input.to)
+        },
         status: typeof input.status === 'string' ? input.status : 'queued'
     });
 
@@ -59,4 +67,48 @@ export async function createPantheonHandoff(workspacePath, input = {}) {
         ...result,
         prompt: formatPantheonHandoffPrompt(result.event)
     };
+}
+
+export async function registerPantheonSession(workspacePath, input = {}) {
+    const provider = normalizeSessionProvider(input.provider);
+    const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+    if (!provider || !sessionId) {
+        throw new Error('provider and sessionId are required to register a Pantheon session');
+    }
+
+    return appendPantheonEvent(workspacePath, {
+        type: 'register_session',
+        provider,
+        sessionId,
+        from: typeof input.from === 'string' ? input.from : 'human',
+        to: 'pantheon',
+        message: typeof input.message === 'string' ? input.message.trim() : 'Registered Pantheon session',
+        summary: typeof input.summary === 'string' ? input.summary.trim() : null,
+        context: {
+            projectName: typeof input.projectName === 'string' ? input.projectName : null
+        },
+        status: 'registered'
+    });
+}
+
+export async function unregisterPantheonSession(workspacePath, input = {}) {
+    const provider = normalizeSessionProvider(input.provider);
+    const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+    if (!provider || !sessionId) {
+        throw new Error('provider and sessionId are required to unregister a Pantheon session');
+    }
+
+    return appendPantheonEvent(workspacePath, {
+        type: 'unregister_session',
+        provider,
+        sessionId,
+        from: typeof input.from === 'string' ? input.from : 'human',
+        to: 'pantheon',
+        message: typeof input.message === 'string' ? input.message.trim() : 'Unregistered Pantheon session',
+        summary: typeof input.summary === 'string' ? input.summary.trim() : null,
+        context: {
+            projectName: typeof input.projectName === 'string' ? input.projectName : null
+        },
+        status: 'removed'
+    });
 }

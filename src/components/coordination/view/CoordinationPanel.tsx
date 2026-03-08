@@ -20,6 +20,14 @@ type PantheonState = {
     activeOwner?: string | null;
     blockers?: string[];
     relatedArtifacts?: string[];
+    registeredSessions?: Array<{
+        entryId: string;
+        provider?: string | null;
+        sessionId?: string | null;
+        title?: string | null;
+        registeredAt?: string | null;
+        projectName?: string | null;
+    }>;
     pendingApprovals?: Array<{
         requestId: string;
         toolName?: string | null;
@@ -37,7 +45,7 @@ type CoordinationPanelProps = {
     isConnected: boolean;
 };
 
-const TARGETS = [
+const STATIC_TARGETS = [
     { value: 'claude', label: '@claude' },
     { value: 'codex', label: '@codex' },
     { value: 'gemini', label: '@gemini' },
@@ -66,6 +74,12 @@ function detectProvider(session: ProjectSession | null): string {
     return session?.__provider || 'claude';
 }
 
+function formatSessionLabel(session: PantheonState['registeredSessions'][number]) {
+    const title = session.title || 'Untitled session';
+    const shortSessionId = session.sessionId ? session.sessionId.slice(0, 8) : 'unknown';
+    return `${title} (${shortSessionId})`;
+}
+
 export default function CoordinationPanel({
     selectedProject,
     selectedSession,
@@ -76,7 +90,8 @@ export default function CoordinationPanel({
     const workspacePath = getWorkspacePath(selectedProject);
     const [events, setEvents] = useState<PantheonEvent[]>([]);
     const [state, setState] = useState<PantheonState | null>(null);
-    const [target, setTarget] = useState('codex');
+    const [target, setTarget] = useState('claude');
+    const [targetSessionEntryId, setTargetSessionEntryId] = useState('');
     const [message, setMessage] = useState('');
     const [artifacts, setArtifacts] = useState('whiteboard.md');
 
@@ -117,11 +132,67 @@ export default function CoordinationPanel({
     }, [latestMessage, workspacePath]);
 
     const recentEvents = useMemo(() => events.slice(-20).reverse(), [events]);
+    const registeredSessions = state?.registeredSessions || [];
+    const currentProvider = detectProvider(selectedSession);
+    const currentSessionTitle = selectedSession?.summary || selectedSession?.title || selectedSession?.name || 'Current session';
+    const currentEntryId = selectedSession?.id ? `${currentProvider}:${selectedSession.id}` : null;
+    const isCurrentSessionRegistered = Boolean(currentEntryId && registeredSessions.some((entry) => entry.entryId === currentEntryId));
+    const targetableSessions = useMemo(
+        () => registeredSessions.filter((entry) => entry.provider === target),
+        [registeredSessions, target]
+    );
+
+    useEffect(() => {
+        if (target === 'claude' || target === 'codex' || target === 'gemini') {
+            if (targetableSessions.some((entry) => entry.entryId === targetSessionEntryId)) {
+                return;
+            }
+
+            setTargetSessionEntryId(targetableSessions[0]?.entryId || '');
+            return;
+        }
+
+        if (targetSessionEntryId) {
+            setTargetSessionEntryId('');
+        }
+    }, [target, targetSessionEntryId, targetableSessions]);
 
     const handleRefresh = () => {
         sendMessage({
             type: 'pantheon:sync',
             workspacePath
+        });
+    };
+
+    const handleRegisterCurrentSession = () => {
+        if (!selectedSession?.id) {
+            return;
+        }
+
+        sendMessage({
+            type: 'pantheon:register-session',
+            workspacePath,
+            provider: currentProvider,
+            sessionId: selectedSession.id,
+            summary: currentSessionTitle,
+            projectName: selectedProject.name,
+            from: 'human'
+        });
+    };
+
+    const handleUnregisterSession = (entryId: string) => {
+        const [provider, sessionId] = entryId.split(':');
+        if (!provider || !sessionId) {
+            return;
+        }
+
+        sendMessage({
+            type: 'pantheon:unregister-session',
+            workspacePath,
+            provider,
+            sessionId,
+            from: 'human',
+            projectName: selectedProject.name
         });
     };
 
@@ -132,13 +203,19 @@ export default function CoordinationPanel({
             return;
         }
 
+        const selectedTargetSession = targetableSessions.find((entry) => entry.entryId === targetSessionEntryId) || null;
+        const targetProvider = target;
+        const targetSessionId = selectedTargetSession?.sessionId || null;
+
         sendMessage({
             type: 'pantheon:create-handoff',
             workspacePath,
             sessionId: selectedSession?.id || null,
             provider: detectProvider(selectedSession),
-            from: detectProvider(selectedSession),
-            to: target,
+            from: 'human',
+            to: targetProvider,
+            targetProvider,
+            targetSessionId,
             message: trimmedMessage,
             artifacts: artifacts
                 .split(',')
@@ -253,6 +330,56 @@ export default function CoordinationPanel({
                         </section>
 
                         <section className="rounded-lg border border-border/70 bg-card px-3 py-3">
+                            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Pantheon Sessions</div>
+                            <div className="mt-3 space-y-3">
+                                <div className="rounded-md border border-border/70 bg-background/60 px-3 py-3">
+                                    <div className="text-sm font-medium text-foreground">{currentProvider} · {currentSessionTitle}</div>
+                                    <div className="mt-1 text-xs text-muted-foreground">{selectedSession?.id || 'No active session selected'}</div>
+                                    <button
+                                        type="button"
+                                        disabled={!isConnected || !selectedSession?.id || isCurrentSessionRegistered}
+                                        onClick={handleRegisterCurrentSession}
+                                        className="mt-3 inline-flex items-center rounded-md border border-border/70 px-3 py-1.5 text-xs font-medium text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                        {isCurrentSessionRegistered ? 'Already registered' : 'Add current session'}
+                                    </button>
+                                </div>
+
+                                {registeredSessions.length > 0 ? (
+                                    registeredSessions.map((entry) => (
+                                        <div key={entry.entryId} className="rounded-md border border-border/70 bg-background/60 px-3 py-3">
+                                            <div className="text-sm font-medium text-foreground">
+                                                {entry.provider || 'unknown'} · {entry.title || entry.sessionId || 'session'}
+                                            </div>
+                                            <div className="mt-1 text-xs text-muted-foreground">{entry.sessionId}</div>
+                                            <div className="mt-3 flex items-center gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setTarget(entry.provider || 'claude');
+                                                        setTargetSessionEntryId(entry.entryId);
+                                                    }}
+                                                    className="inline-flex items-center rounded-md border border-border/70 px-3 py-1.5 text-xs font-medium text-foreground transition hover:bg-accent"
+                                                >
+                                                    Use as target
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleUnregisterSession(entry.entryId)}
+                                                    className="inline-flex items-center rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-50"
+                                                >
+                                                    Remove
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="text-sm text-muted-foreground">No registered Pantheon sessions yet.</div>
+                                )}
+                            </div>
+                        </section>
+
+                        <section className="rounded-lg border border-border/70 bg-card px-3 py-3">
                             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Approval Center</div>
                             <div className="mt-2 space-y-3">
                                 {(state?.pendingApprovals?.length || 0) > 0 ? (
@@ -302,18 +429,41 @@ export default function CoordinationPanel({
                                         onChange={(event) => setTarget(event.target.value)}
                                         className="w-full rounded-md border border-border/70 bg-background px-3 py-2 text-sm"
                                     >
-                                        {TARGETS.map((option) => (
+                                        {STATIC_TARGETS.map((option) => (
                                             <option key={option.value} value={option.value}>
                                                 {option.label}
                                             </option>
                                         ))}
                                     </select>
+                                    {(target === 'claude' || target === 'codex' || target === 'gemini') && (
+                                        <div className="mt-1 text-[11px] text-muted-foreground">
+                                            Pick a registered session below for direct delivery, or leave it empty to fall back to the latest known session.
+                                        </div>
+                                    )}
                                     {target === 'claude' && (
                                         <div className="mt-1 text-[11px] text-amber-600">
                                             Claude handoffs currently fall back to manual attention unless the target session is running in a PTY-backed shell.
                                         </div>
                                     )}
                                 </label>
+
+                                {(target === 'claude' || target === 'codex' || target === 'gemini') && (
+                                    <label className="block">
+                                        <div className="mb-1 text-xs text-muted-foreground">Target Session</div>
+                                        <select
+                                            value={targetSessionEntryId}
+                                            onChange={(event) => setTargetSessionEntryId(event.target.value)}
+                                            className="w-full rounded-md border border-border/70 bg-background px-3 py-2 text-sm"
+                                        >
+                                            <option value="">Latest known session</option>
+                                            {targetableSessions.map((entry) => (
+                                                <option key={entry.entryId} value={entry.entryId}>
+                                                    {formatSessionLabel(entry)}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </label>
+                                )}
 
                                 <label className="block">
                                     <div className="mb-1 text-xs text-muted-foreground">Message</div>

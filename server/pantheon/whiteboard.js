@@ -23,6 +23,10 @@ function formatHandoffLine(event) {
 export function renderWhiteboardMarkdown(state) {
     const recentHandoffs = (state.recentHandoffs || []).map(formatHandoffLine);
     const pendingApprovals = (state.pendingApprovals || []).map(formatApprovalLine);
+    const registeredSessions = (state.registeredSessions || []).map((session) => {
+        const title = session.title || 'Untitled session';
+        return `${session.provider || 'unknown'} (${session.sessionId}): ${title}`;
+    });
     const blockers = [...(state.blockers || [])];
 
     if (pendingApprovals.length > 0) {
@@ -42,6 +46,9 @@ ${formatList(recentHandoffs)}
 
 ## Open Approvals
 ${formatList(pendingApprovals)}
+
+## Registered Sessions
+${formatList(registeredSessions)}
 
 ## Blockers
 ${formatList(blockers)}

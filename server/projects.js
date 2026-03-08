@@ -1400,6 +1400,21 @@ function normalizeComparablePath(inputPath) {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
+function pathsOverlap(leftPath, rightPath) {
+  const left = normalizeComparablePath(leftPath);
+  const right = normalizeComparablePath(rightPath);
+
+  if (!left || !right) {
+    return false;
+  }
+
+  if (left === right) {
+    return true;
+  }
+
+  return left.startsWith(right + path.sep) || right.startsWith(left + path.sep);
+}
+
 async function findCodexJsonlFiles(dir) {
   const files = [];
 
@@ -1486,7 +1501,14 @@ async function getCodexSessions(projectPath, options = {}) {
     }
 
     const sessionsByProject = indexRef?.sessionsByProject || await buildCodexSessionsIndex();
-    const sessions = sessionsByProject.get(normalizedProjectPath) || [];
+    const sessions = [];
+    for (const [indexedPath, indexedSessions] of sessionsByProject.entries()) {
+      if (pathsOverlap(indexedPath, normalizedProjectPath)) {
+        sessions.push(...indexedSessions);
+      }
+    }
+
+    sessions.sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
 
     // Return limited sessions for performance (0 = unlimited for deletion)
     return limit > 0 ? sessions.slice(0, limit) : [...sessions];
@@ -2328,7 +2350,7 @@ async function searchGeminiSessionsForProject(
       continue;
     }
 
-    if (normalizeComparablePath(projectRoot) !== normalizedProjectPath) continue;
+    if (!pathsOverlap(projectRoot, normalizedProjectPath)) continue;
 
     const chatsDir = path.join(geminiTmpDir, projectDir, 'chats');
     let chatFiles;
@@ -2436,7 +2458,7 @@ async function getGeminiCliSessions(projectPath) {
       continue;
     }
 
-    if (normalizeComparablePath(projectRoot) !== normalizedProjectPath) continue;
+    if (!pathsOverlap(projectRoot, normalizedProjectPath)) continue;
 
     const chatsDir = path.join(geminiTmpDir, projectDir, 'chats');
     let chatFiles;
