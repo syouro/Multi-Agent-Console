@@ -70,6 +70,7 @@ import { IS_PLATFORM } from './constants/config.js';
 import { appendPantheonEvent, syncPantheonWorkspace, loadPantheonEvents } from './pantheon/events.js';
 import { createPantheonHandoff, parsePantheonHandoff, registerPantheonSession, unregisterPantheonSession } from './pantheon/bus.js';
 import { normalizeClaudeApprovalDecision, normalizeClaudeApprovalRequest } from './pantheon/approvals.js';
+import { createPantheonService } from './pantheon/service.js';
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
 
@@ -215,6 +216,34 @@ async function resolveProviderSessionWorkspacePath(provider, sessionId, fallback
     const resolvedWorkspacePath = await findWorkspacePathForProviderSession(provider, sessionId);
     return resolvedWorkspacePath || fallbackWorkspacePath || null;
 }
+
+const createNoopPantheonBackgroundWriter = () => {
+    let currentSessionId = null;
+
+    return {
+        isWebSocketWriter: true,
+        send: () => {},
+        setSessionId: (sessionId) => {
+            currentSessionId = sessionId;
+        },
+        getSessionId: () => currentSessionId
+    };
+};
+
+const pantheonRestService = createPantheonService({
+    broadcastPantheonPayload,
+    broadcastPantheonEvent,
+    enrichPantheonState,
+    findProjectByWorkspacePath,
+    resolveProviderSessionWorkspacePath,
+    resolveGeminiResumeSessionId,
+    queryCodex,
+    spawnGemini,
+    queryClaudeSDK,
+    injectPromptIntoProviderSession,
+    createBackgroundWriter: createNoopPantheonBackgroundWriter,
+    getLatestSessionId
+});
 
 async function findWorkspacePathForClaudeSession(sessionId) {
     if (!sessionId) {
@@ -377,6 +406,52 @@ const PTY_SESSION_TIMEOUT = 30 * 60 * 1000;
 const SHELL_URL_PARSE_BUFFER_LIMIT = 32768;
 const ANSI_ESCAPE_SEQUENCE_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
 const TRAILING_URL_PUNCTUATION_REGEX = /[)\]}>.,;:!?]+$/;
+
+function getProviderSessions(project, provider) {
+    if (!project) {
+        return [];
+    }
+
+    if (provider === 'codex') {
+        return project.codexSessions || [];
+    }
+
+    if (provider === 'gemini') {
+        return project.geminiSessions || [];
+    }
+
+    if (provider === 'cursor') {
+        return project.cursorSessions || [];
+    }
+
+    return project.sessions || [];
+}
+
+function getLatestSessionId(project, provider) {
+    const sessions = [...getProviderSessions(project, provider)];
+    sessions.sort((left, right) => {
+        const leftTime = new Date(left.updated_at || left.lastActivity || left.createdAt || left.created_at || 0).getTime();
+        const rightTime = new Date(right.updated_at || right.lastActivity || right.createdAt || right.created_at || 0).getTime();
+        return rightTime - leftTime;
+    });
+
+    return sessions[0]?.id || null;
+}
+
+function injectPromptIntoProviderSession(workspacePath, provider, sessionId, prompt) {
+    if (!sessionId) {
+        return { delivered: false, reason: 'No target session found' };
+    }
+
+    const ptySessionKey = `${workspacePath}_${sessionId}`;
+    const targetSession = ptySessionsMap.get(ptySessionKey);
+    if (!targetSession?.pty?.write) {
+        return { delivered: false, reason: 'Target provider session is not currently attached to a shell PTY' };
+    }
+
+    targetSession.pty.write(`${prompt}\n`);
+    return { delivered: true, sessionId, provider };
+}
 
 function stripAnsiSequences(value = '') {
     return value.replace(ANSI_ESCAPE_SEQUENCE_REGEX, '');
@@ -763,6 +838,84 @@ app.post('/api/projects/create', authenticateToken, async (req, res) => {
     }
 });
 
+function isLoopbackAddress(remoteAddress = '') {
+    return remoteAddress === '127.0.0.1' ||
+        remoteAddress === '::1' ||
+        remoteAddress === '::ffff:127.0.0.1';
+}
+
+function authenticatePantheonBridge(req, res, next) {
+    const remoteAddress = req.ip || req.socket?.remoteAddress || '';
+
+    if (isLoopbackAddress(remoteAddress)) {
+        return next();
+    }
+
+    return res.status(403).json({ error: 'Pantheon bridge is only available from localhost' });
+}
+
+app.post('/api/pantheon/handoff', authenticatePantheonBridge, async (req, res) => {
+    try {
+        const {
+            workspacePath,
+            to,
+            task,
+            artifacts = [],
+            note = '',
+            targetSessionId = null,
+            targetProvider = null,
+            from = 'human'
+        } = req.body || {};
+
+        if (!workspacePath || typeof workspacePath !== 'string') {
+            return res.status(400).json({ error: 'workspacePath is required' });
+        }
+
+        if (!to || typeof to !== 'string') {
+            return res.status(400).json({ error: 'to is required' });
+        }
+
+        if (!task || typeof task !== 'string' || !task.trim()) {
+            return res.status(400).json({ error: 'task is required' });
+        }
+
+        const trimmedTask = task.trim();
+        const trimmedNote = typeof note === 'string' ? note.trim() : '';
+        const message = trimmedNote ? `${trimmedTask}\n\nNote: ${trimmedNote}` : trimmedTask;
+
+        const result = await pantheonRestService.createAndDispatchPantheonHandoff(workspacePath, {
+            from,
+            to,
+            targetProvider: targetProvider || to,
+            targetSessionId,
+            message,
+            artifacts,
+            status: 'queued'
+        });
+
+        const primaryDelivery = result.deliveries?.[0] || null;
+
+        res.json({
+            ok: true,
+            eventId: result.event.id,
+            workspacePath: result.event.workspacePath,
+            to: result.event.to,
+            from: result.event.from,
+            targetProvider: primaryDelivery?.provider || targetProvider || result.event.context?.targetProvider || null,
+            targetSessionId: primaryDelivery?.sessionId || targetSessionId || null,
+            status: primaryDelivery?.delivered ? 'delivered' : 'queued',
+            prompt: result.prompt,
+            deliveries: result.deliveries || []
+        });
+    } catch (error) {
+        console.error('[Pantheon] REST handoff error:', error);
+        res.status(400).json({
+            ok: false,
+            error: error instanceof Error ? error.message : 'Failed to create Pantheon handoff'
+        });
+    }
+});
+
 // Search conversations content (SSE streaming)
 app.get('/api/search/conversations', authenticateToken, async (req, res) => {
     const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
@@ -944,7 +1097,7 @@ app.post('/api/create-folder', authenticateToken, async (req, res) => {
 app.get('/api/projects/:projectName/file', authenticateToken, async (req, res) => {
     try {
         const { projectName } = req.params;
-        const { filePath } = req.query;
+        const { filePath, workspacePath } = req.query;
 
 
         // Security: ensure the requested path is inside the project root
@@ -952,9 +1105,9 @@ app.get('/api/projects/:projectName/file', authenticateToken, async (req, res) =
             return res.status(400).json({ error: 'Invalid file path' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const { projectRoot, error: projectRootError, status } = await resolveRequestedProjectRoot(projectName, workspacePath);
         if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
+            return res.status(status).json({ error: projectRootError });
         }
 
         // Handle both absolute and relative paths
@@ -984,7 +1137,7 @@ app.get('/api/projects/:projectName/file', authenticateToken, async (req, res) =
 app.get('/api/projects/:projectName/files/content', authenticateToken, async (req, res) => {
     try {
         const { projectName } = req.params;
-        const { path: filePath } = req.query;
+        const { path: filePath, workspacePath } = req.query;
 
 
         // Security: ensure the requested path is inside the project root
@@ -992,9 +1145,9 @@ app.get('/api/projects/:projectName/files/content', authenticateToken, async (re
             return res.status(400).json({ error: 'Invalid file path' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const { projectRoot, error: projectRootError, status } = await resolveRequestedProjectRoot(projectName, workspacePath);
         if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
+            return res.status(status).json({ error: projectRootError });
         }
 
         const resolved = path.resolve(filePath);
@@ -1037,7 +1190,7 @@ app.get('/api/projects/:projectName/files/content', authenticateToken, async (re
 app.put('/api/projects/:projectName/file', authenticateToken, async (req, res) => {
     try {
         const { projectName } = req.params;
-        const { filePath, content } = req.body;
+        const { filePath, content, workspacePath } = req.body;
 
 
         // Security: ensure the requested path is inside the project root
@@ -1049,9 +1202,9 @@ app.put('/api/projects/:projectName/file', authenticateToken, async (req, res) =
             return res.status(400).json({ error: 'Content is required' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const { projectRoot, error: projectRootError, status } = await resolveRequestedProjectRoot(projectName, workspacePath);
         if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
+            return res.status(status).json({ error: projectRootError });
         }
 
         // Handle both absolute and relative paths
@@ -1085,28 +1238,21 @@ app.put('/api/projects/:projectName/file', authenticateToken, async (req, res) =
 
 app.get('/api/projects/:projectName/files', authenticateToken, async (req, res) => {
     try {
-
-        // Using fsPromises from import
-
-        // Use extractProjectDirectory to get the actual project path
-        let actualPath;
-        try {
-            actualPath = await extractProjectDirectory(req.params.projectName);
-        } catch (error) {
-            console.error('Error extracting project directory:', error);
-            // Fallback to simple dash replacement
-            actualPath = req.params.projectName.replace(/-/g, '/');
+        const { projectName } = req.params;
+        const { workspacePath } = req.query;
+        const { projectRoot, error: projectRootError, status } = await resolveRequestedProjectRoot(projectName, workspacePath);
+        if (!projectRoot) {
+            return res.status(status).json({ error: projectRootError });
         }
 
         // Check if path exists
         try {
-            await fsPromises.access(actualPath);
+            await fsPromises.access(projectRoot);
         } catch (e) {
-            return res.status(404).json({ error: `Project path not found: ${actualPath}` });
+            return res.status(404).json({ error: `Project path not found: ${projectRoot}` });
         }
 
-        const files = await getFileTree(actualPath, 10, 0, true);
-        const hiddenFiles = files.filter(f => f.name.startsWith('.'));
+        const files = await getFileTree(projectRoot, 10, 0, true);
         res.json(files);
     } catch (error) {
         console.error('[ERROR] File tree error:', error.message);
@@ -1133,6 +1279,28 @@ function validatePathInProject(projectRoot, targetPath) {
         return { valid: false, error: 'Path must be under project root' };
     }
     return { valid: true, resolved };
+}
+
+async function resolveRequestedProjectRoot(projectName, requestedWorkspacePath = null) {
+    if (requestedWorkspacePath) {
+        const validation = await validateWorkspacePath(requestedWorkspacePath);
+        if (!validation.valid) {
+            return { projectRoot: null, error: validation.error, status: 403 };
+        }
+
+        return {
+            projectRoot: validation.resolvedPath || path.resolve(requestedWorkspacePath),
+            error: null,
+            status: 200
+        };
+    }
+
+    const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+    if (!projectRoot) {
+        return { projectRoot: null, error: 'Project not found', status: 404 };
+    }
+
+    return { projectRoot, error: null, status: 200 };
 }
 
 /**
@@ -1165,7 +1333,7 @@ function validateFilename(name) {
 app.post('/api/projects/:projectName/files/create', authenticateToken, async (req, res) => {
     try {
         const { projectName } = req.params;
-        const { path: parentPath, type, name } = req.body;
+        const { path: parentPath, type, name, workspacePath } = req.body;
 
         // Validate input
         if (!name || !type) {
@@ -1182,9 +1350,9 @@ app.post('/api/projects/:projectName/files/create', authenticateToken, async (re
         }
 
         // Get project root
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const { projectRoot, error: projectRootError, status } = await resolveRequestedProjectRoot(projectName, workspacePath);
         if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
+            return res.status(status).json({ error: projectRootError });
         }
 
         // Build and validate target path
@@ -1242,7 +1410,7 @@ app.post('/api/projects/:projectName/files/create', authenticateToken, async (re
 app.put('/api/projects/:projectName/files/rename', authenticateToken, async (req, res) => {
     try {
         const { projectName } = req.params;
-        const { oldPath, newName } = req.body;
+        const { oldPath, newName, workspacePath } = req.body;
 
         // Validate input
         if (!oldPath || !newName) {
@@ -1255,9 +1423,9 @@ app.put('/api/projects/:projectName/files/rename', authenticateToken, async (req
         }
 
         // Get project root
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const { projectRoot, error: projectRootError, status } = await resolveRequestedProjectRoot(projectName, workspacePath);
         if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
+            return res.status(status).json({ error: projectRootError });
         }
 
         // Validate old path
@@ -1319,7 +1487,7 @@ app.put('/api/projects/:projectName/files/rename', authenticateToken, async (req
 app.delete('/api/projects/:projectName/files', authenticateToken, async (req, res) => {
     try {
         const { projectName } = req.params;
-        const { path: targetPath, type } = req.body;
+        const { path: targetPath, type, workspacePath } = req.body;
 
         // Validate input
         if (!targetPath) {
@@ -1327,9 +1495,9 @@ app.delete('/api/projects/:projectName/files', authenticateToken, async (req, re
         }
 
         // Get project root
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const { projectRoot, error: projectRootError, status } = await resolveRequestedProjectRoot(projectName, workspacePath);
         if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
+            return res.status(status).json({ error: projectRootError });
         }
 
         // Validate path
@@ -1420,7 +1588,7 @@ const uploadFilesHandler = async (req, res) => {
 
         try {
             const { projectName } = req.params;
-            const { targetPath, relativePaths } = req.body;
+            const { targetPath, relativePaths, workspacePath } = req.body;
 
             // Parse relative paths if provided (for folder uploads)
             let filePaths = [];
@@ -1445,9 +1613,9 @@ const uploadFilesHandler = async (req, res) => {
             }
 
             // Get project root
-            const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+            const { projectRoot, error: projectRootError, status } = await resolveRequestedProjectRoot(projectName, workspacePath);
             if (!projectRoot) {
-                return res.status(404).json({ error: 'Project not found' });
+                return res.status(status).json({ error: projectRootError });
             }
 
             console.log('[DEBUG] Project root:', projectRoot);
@@ -1606,37 +1774,6 @@ function handleChatConnection(ws) {
     const responseBuffers = new Map();
     let pendingCommandContext = null;
 
-    const getProviderSessions = (project, provider) => {
-        if (!project) {
-            return [];
-        }
-
-        if (provider === 'codex') {
-            return project.codexSessions || [];
-        }
-
-        if (provider === 'gemini') {
-            return project.geminiSessions || [];
-        }
-
-        if (provider === 'cursor') {
-            return project.cursorSessions || [];
-        }
-
-        return project.sessions || [];
-    };
-
-    const getLatestSessionId = (project, provider) => {
-        const sessions = [...getProviderSessions(project, provider)];
-        sessions.sort((left, right) => {
-            const leftTime = new Date(left.updated_at || left.lastActivity || left.createdAt || left.created_at || 0).getTime();
-            const rightTime = new Date(right.updated_at || right.lastActivity || right.createdAt || right.created_at || 0).getTime();
-            return rightTime - leftTime;
-        });
-
-        return sessions[0]?.id || null;
-    };
-
     const getSessionContextKey = (provider, sessionId) => `${provider}:${sessionId}`;
 
     const rememberSessionContext = (provider, sessionId, workspacePath) => {
@@ -1717,6 +1854,19 @@ function handleChatConnection(ws) {
             if (payload.data?.type === 'content_block_delta' && typeof payload.data?.delta?.text === 'string') {
                 return payload.data.delta.text;
             }
+            if (
+                payload.data?.type === 'content_block_start' &&
+                payload.data?.content_block?.type === 'text' &&
+                typeof payload.data?.content_block?.text === 'string'
+            ) {
+                return payload.data.content_block.text;
+            }
+            if (payload.data?.type === 'message' && typeof payload.data?.content === 'string') {
+                return payload.data.content;
+            }
+            if (payload.data?.type === 'result' && typeof payload.data?.result === 'string') {
+                return payload.data.result;
+            }
             return '';
         }
 
@@ -1739,59 +1889,6 @@ function handleChatConnection(ws) {
         }
 
         return '';
-    };
-
-    const resolvePantheonTargetFromState = (state, handoffEvent) => {
-        const context = handoffEvent.context && typeof handoffEvent.context === 'object' ? handoffEvent.context : {};
-        const requestedProvider = typeof context.targetProvider === 'string' ? context.targetProvider : handoffEvent.to;
-        const requestedSessionId = typeof context.targetSessionId === 'string' ? context.targetSessionId : null;
-
-        if (requestedProvider === 'human' || requestedProvider === 'all') {
-            return { provider: requestedProvider, sessionId: requestedSessionId, workspacePath: null };
-        }
-
-        if (requestedProvider && requestedSessionId) {
-            return { provider: requestedProvider, sessionId: requestedSessionId, workspacePath: null };
-        }
-
-        const registeredSessions = Array.isArray(state?.registeredSessions) ? state.registeredSessions : [];
-        const matchingSessions = registeredSessions.filter((entry) =>
-            entry.provider === requestedProvider && entry.sessionId
-        );
-        const preferred = matchingSessions[matchingSessions.length - 1];
-
-        return preferred ? {
-            provider: preferred.provider,
-            sessionId: preferred.sessionId,
-            workspacePath: preferred.workspacePath || null
-        } : null;
-    };
-
-    const resolveDeliveryWorkspacePath = async (targetInfo, fallbackWorkspacePath) => {
-        if (!targetInfo?.provider || !targetInfo?.sessionId) {
-            return fallbackWorkspacePath;
-        }
-
-        return await resolveProviderSessionWorkspacePath(
-            targetInfo.provider,
-            targetInfo.sessionId,
-            targetInfo.workspacePath || fallbackWorkspacePath
-        );
-    };
-
-    const injectPromptIntoProviderSession = (workspacePath, provider, sessionId, prompt) => {
-        if (!sessionId) {
-            return { delivered: false, reason: 'No target session found' };
-        }
-
-        const ptySessionKey = `${workspacePath}_${sessionId}`;
-        const targetSession = ptySessionsMap.get(ptySessionKey);
-        if (!targetSession?.pty?.write) {
-            return { delivered: false, reason: 'Target provider session is not currently attached to a shell PTY' };
-        }
-
-        targetSession.pty.write(`${prompt}\n`);
-        return { delivered: true, sessionId, provider };
     };
 
     const createPantheonBackgroundWriter = (provider, workspacePath) => {
@@ -1817,181 +1914,20 @@ function handleChatConnection(ws) {
             getSessionId: () => currentSessionId
         };
     };
-
-    const dispatchPantheonChatHandoff = async (workspacePath, targetInfo, prompt) => {
-        if (!targetInfo?.provider || !targetInfo?.sessionId || targetInfo.provider === 'human' || targetInfo.provider === 'all') {
-            return { delivered: false, reason: 'No target chat session found' };
-        }
-
-        const writer = createPantheonBackgroundWriter(targetInfo.provider, workspacePath);
-
-        try {
-            if (targetInfo.provider === 'codex') {
-                await queryCodex(prompt, {
-                    cwd: workspacePath,
-                    projectPath: workspacePath,
-                    sessionId: targetInfo.sessionId,
-                    resume: true
-                }, writer);
-                return { delivered: true, channel: 'chat' };
-            }
-
-            if (targetInfo.provider === 'gemini') {
-                const resumeSessionId = await resolveGeminiResumeSessionId(workspacePath, targetInfo.sessionId);
-                await spawnGemini(prompt, {
-                    cwd: workspacePath,
-                    projectPath: workspacePath,
-                    sessionId: targetInfo.sessionId,
-                    resumeSessionId,
-                    resume: true
-                }, writer);
-                return { delivered: true, channel: 'chat' };
-            }
-
-            if (targetInfo.provider === 'claude') {
-                await queryClaudeSDK(prompt, {
-                    cwd: workspacePath,
-                    projectPath: workspacePath,
-                    sessionId: targetInfo.sessionId,
-                    resume: true
-                }, writer);
-                return { delivered: true, channel: 'chat' };
-            }
-        } catch (error) {
-            console.error('[Pantheon] Chat handoff dispatch failed:', error);
-            return {
-                delivered: false,
-                reason: error instanceof Error ? error.message : 'Chat handoff dispatch failed'
-            };
-        }
-
-        return { delivered: false, reason: 'Unsupported provider for chat handoff' };
-    };
-
-    const deliverPantheonHandoff = async (workspacePath, handoffEvent, prompt, targetInfo) => {
-        const chatResult = await dispatchPantheonChatHandoff(workspacePath, targetInfo, prompt);
-
-        if (chatResult.delivered) {
-            await broadcastPantheonEvent(workspacePath, {
-                type: 'handoff_delivery',
-                provider: targetInfo.provider,
-                sessionId: targetInfo.sessionId,
-                from: handoffEvent.from,
-                to: handoffEvent.to,
-                message: `Dispatched handoff to ${targetInfo.provider} session ${targetInfo.sessionId} via chat`,
-                artifacts: handoffEvent.artifacts,
-                status: 'delivered'
-            });
-            return;
-        }
-
-        const injectionResult = injectPromptIntoProviderSession(
-            workspacePath,
-            targetInfo.provider,
-            targetInfo.sessionId,
-            prompt
-        );
-
-        if (injectionResult.delivered) {
-            await broadcastPantheonEvent(workspacePath, {
-                type: 'handoff_delivery',
-                provider: targetInfo.provider,
-                sessionId: targetInfo.sessionId,
-                from: handoffEvent.from,
-                to: handoffEvent.to,
-                message: `Delivered handoff to ${targetInfo.provider} session ${targetInfo.sessionId} via shell`,
-                artifacts: handoffEvent.artifacts,
-                status: 'delivered'
-            });
-            return;
-        }
-
-        await broadcastPantheonEvent(workspacePath, {
-            type: 'manual_attention_required',
-            provider: targetInfo.provider,
-            sessionId: targetInfo.sessionId,
-            from: handoffEvent.from,
-            to: handoffEvent.to,
-            message: chatResult.reason || injectionResult.reason,
-            artifacts: handoffEvent.artifacts,
-            status: 'attention'
-        });
-    };
-
-    const resolvePantheonTarget = async (workspacePath, handoffEvent) => {
-        const context = handoffEvent.context && typeof handoffEvent.context === 'object' ? handoffEvent.context : {};
-        const requestedProvider = typeof context.targetProvider === 'string' ? context.targetProvider : handoffEvent.to;
-        const requestedSessionId = typeof context.targetSessionId === 'string' ? context.targetSessionId : null;
-
-        if (requestedProvider === 'human' || requestedProvider === 'all') {
-            return { provider: requestedProvider, sessionId: requestedSessionId, workspacePath: null };
-        }
-
-        if (requestedProvider && requestedSessionId) {
-            return { provider: requestedProvider, sessionId: requestedSessionId, workspacePath: null };
-        }
-
-        const project = await findProjectByWorkspacePath(workspacePath);
-        return {
-            provider: requestedProvider,
-            sessionId: getLatestSessionId(project, requestedProvider),
-            workspacePath: project?.path || project?.fullPath || workspacePath
-        };
-    };
-
-    const dispatchPantheonHandoffResult = async (result) => {
-        broadcastPantheonPayload({
-            type: 'pantheon:event',
-            workspacePath: result.event.workspacePath,
-            event: result.event,
-            state: enrichPantheonState(result.state),
-            prompt: result.prompt
-        });
-
-        if (result.event.to === 'all') {
-            const registeredSessions = result.state?.registeredSessions || [];
-            const deliverableSessions = registeredSessions.filter((entry) =>
-                entry.provider && entry.sessionId && entry.provider !== 'human'
-            );
-
-            if (deliverableSessions.length === 0) {
-                await broadcastPantheonEvent(result.event.workspacePath, {
-                    type: 'manual_attention_required',
-                    provider: 'all',
-                    sessionId: null,
-                    from: result.event.from,
-                    to: result.event.to,
-                    message: 'No registered sessions are available to receive this @all handoff',
-                    artifacts: result.event.artifacts,
-                    status: 'attention'
-                });
-            }
-
-            for (const entry of deliverableSessions) {
-                const deliveryWorkspacePath = await resolveDeliveryWorkspacePath(entry, result.event.workspacePath);
-                await deliverPantheonHandoff(deliveryWorkspacePath, result.event, result.prompt, {
-                    provider: entry.provider,
-                    sessionId: entry.sessionId,
-                    workspacePath: deliveryWorkspacePath
-                });
-            }
-            return;
-        }
-
-        if (!result.event.to || result.event.to === 'human') {
-            return;
-        }
-
-        const targetInfo =
-            resolvePantheonTargetFromState(result.state, result.event) ||
-            await resolvePantheonTarget(result.event.workspacePath, result.event);
-
-        const deliveryWorkspacePath = await resolveDeliveryWorkspacePath(targetInfo, result.event.workspacePath);
-        await deliverPantheonHandoff(deliveryWorkspacePath, result.event, result.prompt, {
-            ...targetInfo,
-            workspacePath: deliveryWorkspacePath
-        });
-    };
+    const pantheonService = createPantheonService({
+        broadcastPantheonPayload,
+        broadcastPantheonEvent,
+        enrichPantheonState,
+        findProjectByWorkspacePath,
+        resolveProviderSessionWorkspacePath,
+        resolveGeminiResumeSessionId,
+        queryCodex,
+        spawnGemini,
+        queryClaudeSDK,
+        injectPromptIntoProviderSession,
+        createBackgroundWriter: createPantheonBackgroundWriter,
+        getLatestSessionId
+    });
 
     const maybeTriggerAutomaticPantheonHandoff = async (provider, sessionId) => {
         if (!provider || !sessionId) {
@@ -2021,7 +1957,10 @@ function handleChatConnection(ws) {
             status: 'queued'
         });
 
-        await dispatchPantheonHandoffResult(result);
+        await pantheonService.dispatchPantheonHandoffResult({
+            ...result,
+            state: enrichPantheonState(result.state)
+        });
     };
 
     const handleOutgoingProviderMessage = async (payload) => {
@@ -2043,7 +1982,7 @@ function handleChatConnection(ws) {
             rememberSessionContext('codex', payload.actualSessionId, pendingCommandContext.workspacePath);
         }
 
-        if ((payload?.type === 'claude-complete' || payload?.type === 'codex-complete') && provider && sessionId) {
+        if ((payload?.type === 'claude-complete' || payload?.type === 'codex-complete' || payload?.type === 'gemini-complete') && provider && sessionId) {
             await maybeTriggerAutomaticPantheonHandoff(provider, sessionId);
             if (pendingCommandContext?.provider === provider) {
                 pendingCommandContext = null;
@@ -2239,7 +2178,7 @@ function handleChatConnection(ws) {
                 });
             } else if (data.type === 'pantheon:create-handoff') {
                 const workspacePath = data.workspacePath || data.projectPath;
-                const result = await createPantheonHandoff(workspacePath, {
+                await pantheonService.createAndDispatchPantheonHandoff(workspacePath, {
                     provider: data.provider || null,
                     sessionId: data.sessionId || null,
                     from: data.from || 'human',
@@ -2250,7 +2189,6 @@ function handleChatConnection(ws) {
                     artifacts: data.artifacts || [],
                     status: data.status || 'queued'
                 });
-                await dispatchPantheonHandoffResult(result);
             } else if (data.type === 'pantheon:register-session') {
                 const provider = data.provider || null;
                 const sessionId = data.sessionId || null;

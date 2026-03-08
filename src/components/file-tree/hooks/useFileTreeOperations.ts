@@ -2,8 +2,9 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import JSZip from 'jszip';
 import { api } from '../../../utils/api';
+import { getSessionWorkspacePath } from '../../../utils/sessionWorkspacePath';
 import type { FileTreeNode } from '../types/types';
-import type { Project } from '../../../types/app';
+import type { Project, ProjectSession } from '../../../types/app';
 
 // Invalid filename characters
 const INVALID_FILENAME_CHARS = /[<>:"/\\|?*\x00-\x1f]/;
@@ -21,6 +22,7 @@ export type DeleteConfirmation = {
 
 export type UseFileTreeOperationsOptions = {
   selectedProject: Project | null;
+  selectedSession: ProjectSession | null;
   onRefresh: () => void;
   showToast: (message: string, type: 'success' | 'error') => void;
 };
@@ -63,10 +65,12 @@ export type UseFileTreeOperationsResult = {
 
 export function useFileTreeOperations({
   selectedProject,
+  selectedSession,
   onRefresh,
   showToast,
 }: UseFileTreeOperationsOptions): UseFileTreeOperationsResult {
   const { t } = useTranslation();
+  const workspacePath = getSessionWorkspacePath(selectedProject, selectedSession);
 
   // State
   const [renamingItem, setRenamingItem] = useState<FileTreeNode | null>(null);
@@ -129,6 +133,7 @@ export function useFileTreeOperations({
       const response = await api.renameFile(selectedProject.name, {
         oldPath: renamingItem.path,
         newName: renameValue,
+        workspacePath,
       });
 
       if (!response.ok) {
@@ -144,7 +149,7 @@ export function useFileTreeOperations({
     } finally {
       setOperationLoading(false);
     }
-  }, [renamingItem, renameValue, selectedProject, validateFilename, showToast, t, onRefresh, handleCancelRename]);
+  }, [renamingItem, renameValue, selectedProject, validateFilename, showToast, t, onRefresh, handleCancelRename, workspacePath]);
 
   // Delete operations
   const handleStartDelete = useCallback((item: FileTreeNode) => {
@@ -164,6 +169,7 @@ export function useFileTreeOperations({
       const response = await api.deleteFile(selectedProject.name, {
         path: item.path,
         type: item.type,
+        workspacePath,
       });
 
       if (!response.ok) {
@@ -184,7 +190,7 @@ export function useFileTreeOperations({
     } finally {
       setOperationLoading(false);
     }
-  }, [deleteConfirmation, selectedProject, showToast, t, onRefresh, handleCancelDelete]);
+  }, [deleteConfirmation, selectedProject, showToast, t, onRefresh, handleCancelDelete, workspacePath]);
 
   // Create operations
   const handleStartCreate = useCallback((parentPath: string, type: 'file' | 'directory') => {
@@ -216,6 +222,7 @@ export function useFileTreeOperations({
         path: newItemParent,
         type: newItemType,
         name: newItemName,
+        workspacePath,
       });
 
       if (!response.ok) {
@@ -236,7 +243,7 @@ export function useFileTreeOperations({
     } finally {
       setOperationLoading(false);
     }
-  }, [selectedProject, newItemParent, newItemType, newItemName, validateFilename, showToast, t, onRefresh, handleCancelCreate]);
+  }, [selectedProject, newItemParent, newItemType, newItemName, validateFilename, showToast, t, onRefresh, handleCancelCreate, workspacePath]);
 
   // Copy path to clipboard
   const handleCopyPath = useCallback((item: FileTreeNode) => {
@@ -272,7 +279,7 @@ export function useFileTreeOperations({
   const downloadSingleFile = useCallback(async (item: FileTreeNode) => {
     if (!selectedProject) return;
 
-    const response = await api.readFile(selectedProject.name, item.path);
+    const response = await api.readFile(selectedProject.name, item.path, workspacePath);
 
     if (!response.ok) {
       throw new Error('Failed to download file');
@@ -293,7 +300,7 @@ export function useFileTreeOperations({
     document.body.removeChild(anchor);
 
     URL.revokeObjectURL(url);
-  }, [selectedProject]);
+  }, [selectedProject, workspacePath]);
 
   // Download folder as ZIP
   const downloadFolderAsZip = useCallback(async (folder: FileTreeNode) => {
@@ -307,7 +314,7 @@ export function useFileTreeOperations({
 
       if (node.type === 'file') {
         // Fetch file content
-        const response = await api.readFile(selectedProject.name, node.path);
+        const response = await api.readFile(selectedProject.name, node.path, workspacePath);
         if (response.ok) {
           const data = await response.json();
           zip.file(fullPath, data.content);
@@ -342,7 +349,7 @@ export function useFileTreeOperations({
     URL.revokeObjectURL(url);
 
     showToast(t('fileTree.toast.folderDownloaded', 'Folder downloaded as ZIP'), 'success');
-  }, [selectedProject, showToast, t]);
+  }, [selectedProject, showToast, t, workspacePath]);
 
   return {
     // Rename operations

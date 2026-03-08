@@ -119,6 +119,7 @@ export function buildPantheonState(events = []) {
     const artifactSet = new Set();
     const pendingApprovals = new Map();
     const registeredSessions = new Map();
+    const unresolvedAttention = new Map();
 
     for (const event of events) {
         for (const artifact of normalizeArtifacts(event.artifacts)) {
@@ -140,13 +141,15 @@ export function buildPantheonState(events = []) {
                         sessionId: event.sessionId,
                         title: event.summary || event.message || null,
                         registeredAt: event.createdAt,
-                        projectName: typeof event.context?.projectName === 'string' ? event.context.projectName : null
+                        projectName: typeof event.context?.projectName === 'string' ? event.context.projectName : null,
+                        workspacePath: typeof event.context?.workspacePath === 'string' ? event.context.workspacePath : event.workspacePath
                     });
                 }
                 break;
             case 'unregister_session':
                 if (event.provider && event.sessionId) {
                     registeredSessions.delete(`${event.provider}:${event.sessionId}`);
+                    unresolvedAttention.delete(`${event.provider}:${event.sessionId}`);
                 }
                 break;
             case 'completion':
@@ -166,8 +169,15 @@ export function buildPantheonState(events = []) {
                 }
                 break;
             case 'manual_attention_required':
-                if (event.message) {
-                    state.blockers.push(event.message);
+                if (event.message && event.provider && event.sessionId) {
+                    unresolvedAttention.set(`${event.provider}:${event.sessionId}`, event.message);
+                } else if (event.message) {
+                    unresolvedAttention.set(event.id, event.message);
+                }
+                break;
+            case 'handoff_delivery':
+                if (event.provider && event.sessionId) {
+                    unresolvedAttention.delete(`${event.provider}:${event.sessionId}`);
                 }
                 break;
             default:
@@ -175,6 +185,7 @@ export function buildPantheonState(events = []) {
         }
     }
 
+    state.blockers = Array.from(new Set(unresolvedAttention.values()));
     state.relatedArtifacts = Array.from(artifactSet).slice(0, 20);
     state.pendingApprovals = Array.from(pendingApprovals.values());
     state.registeredSessions = Array.from(registeredSessions.values());

@@ -494,3 +494,26 @@ Build Pantheon MVP now as:
 - small enough to finish
 
 This is the narrowest version that still tests the core value of multi-agent coordination without pretending provider capabilities are more uniform than they really are.
+
+## Temporary Agent Handoff Rule
+
+For the current test phase, `@mentions` should be treated as a deliberate handoff signal, not normal conversation text.
+
+Rules:
+
+- do not use `@claude`, `@codex`, `@gemini`, `@human`, or `@all` during normal discussion
+- use `@target` only when the current agent has finished its part and is explicitly handing work to the next agent
+- place the `@target` handoff block at the end of the reply
+- use only one `@target` per reply
+- if no clear next owner exists, hand off to `@human`
+
+Temporary example:
+
+```text
+Finished updating the contract draft.
+
+@codex
+task: Validate the API shape and update the related types.
+artifacts: api_spec.json, src/types/auth.ts
+note: Focus on token fields and error response shape.
+```

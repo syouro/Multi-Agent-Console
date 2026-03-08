@@ -28,6 +28,7 @@
     "server": "node server/index.js",
     "client": "vite --host",
     "build": "vite build",
+    "pantheon:mcp": "node server/pantheon/mcp-server.js",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/",

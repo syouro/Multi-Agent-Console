@@ -24,6 +24,15 @@ export const authenticatedFetch = (url, options = {}) => {
   });
 };
 
+const withWorkspacePath = (url, workspacePath = null) => {
+  if (!workspacePath) {
+    return url;
+  }
+
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}workspacePath=${encodeURIComponent(workspacePath)}`;
+};
+
 // API endpoints
 export const api = {
   // Auth endpoints (no token required)
@@ -110,37 +119,39 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(workspaceData),
     }),
-  readFile: (projectName, filePath) =>
-    authenticatedFetch(`/api/projects/${projectName}/file?filePath=${encodeURIComponent(filePath)}`),
-  saveFile: (projectName, filePath, content) =>
-    authenticatedFetch(`/api/projects/${projectName}/file`, {
+  readFile: (projectName, filePath, workspacePath = null) =>
+    authenticatedFetch(
+      withWorkspacePath(`/api/projects/${projectName}/file?filePath=${encodeURIComponent(filePath)}`, workspacePath)
+    ),
+  saveFile: (projectName, filePath, content, workspacePath = null) =>
+    authenticatedFetch(withWorkspacePath(`/api/projects/${projectName}/file`, workspacePath), {
       method: 'PUT',
-      body: JSON.stringify({ filePath, content }),
+      body: JSON.stringify({ filePath, content, workspacePath }),
     }),
-  getFiles: (projectName, options = {}) =>
-    authenticatedFetch(`/api/projects/${projectName}/files`, options),
+  getFiles: (projectName, options = {}, workspacePath = null) =>
+    authenticatedFetch(withWorkspacePath(`/api/projects/${projectName}/files`, workspacePath), options),
 
   // File operations
-  createFile: (projectName, { path, type, name }) =>
-    authenticatedFetch(`/api/projects/${projectName}/files/create`, {
+  createFile: (projectName, { path, type, name, workspacePath = null }) =>
+    authenticatedFetch(withWorkspacePath(`/api/projects/${projectName}/files/create`, workspacePath), {
       method: 'POST',
-      body: JSON.stringify({ path, type, name }),
+      body: JSON.stringify({ path, type, name, workspacePath }),
     }),
 
-  renameFile: (projectName, { oldPath, newName }) =>
-    authenticatedFetch(`/api/projects/${projectName}/files/rename`, {
+  renameFile: (projectName, { oldPath, newName, workspacePath = null }) =>
+    authenticatedFetch(withWorkspacePath(`/api/projects/${projectName}/files/rename`, workspacePath), {
       method: 'PUT',
-      body: JSON.stringify({ oldPath, newName }),
+      body: JSON.stringify({ oldPath, newName, workspacePath }),
     }),
 
-  deleteFile: (projectName, { path, type }) =>
-    authenticatedFetch(`/api/projects/${projectName}/files`, {
+  deleteFile: (projectName, { path, type, workspacePath = null }) =>
+    authenticatedFetch(withWorkspacePath(`/api/projects/${projectName}/files`, workspacePath), {
       method: 'DELETE',
-      body: JSON.stringify({ path, type }),
+      body: JSON.stringify({ path, type, workspacePath }),
     }),
 
-  uploadFiles: (projectName, formData) =>
-    authenticatedFetch(`/api/projects/${projectName}/files/upload`, {
+  uploadFiles: (projectName, formData, workspacePath = null) =>
+    authenticatedFetch(withWorkspacePath(`/api/projects/${projectName}/files/upload`, workspacePath), {
       method: 'POST',
       body: formData,
       headers: {}, // Let browser set Content-Type for FormData

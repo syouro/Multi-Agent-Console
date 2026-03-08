@@ -638,7 +638,7 @@ async function getProjects(progressCallback = null) {
     });
   }
 
-  return projects;
+  return await filterPlaceholderProjects(dedupeProjectsByResolvedPath(projects));
 }
 
 async function getSessions(projectName, limit = 5, offset = 0) {
@@ -981,61 +981,84 @@ async function parseAgentTools(filePath) {
 
 // Get messages for a specific session with pagination support
 async function getSessionMessages(projectName, sessionId, limit = null, offset = 0) {
-  const projectDir = path.join(os.homedir(), '.claude', 'projects', projectName);
+  const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+  const candidateProjectDirs = [path.join(claudeProjectsDir, projectName)];
 
   try {
-    const files = await fs.readdir(projectDir);
-    // agent-*.jsonl files contain subagent tool history - we'll process them separately
-    const jsonlFiles = files.filter(file => file.endsWith('.jsonl') && !file.startsWith('agent-'));
-    const agentFiles = files.filter(file => file.endsWith('.jsonl') && file.startsWith('agent-'));
+    try {
+      const allProjectDirs = await fs.readdir(claudeProjectsDir, { withFileTypes: true });
+      for (const entry of allProjectDirs) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
 
-    if (jsonlFiles.length === 0) {
-      return { messages: [], total: 0, hasMore: false };
+        const fullPath = path.join(claudeProjectsDir, entry.name);
+        if (!candidateProjectDirs.includes(fullPath)) {
+          candidateProjectDirs.push(fullPath);
+        }
+      }
+    } catch {
+      // Ignore and fall back to the provided project directory only.
     }
 
     const messages = [];
     // Map of agentId -> tools for subagent tool grouping
     const agentToolsCache = new Map();
 
-    // Process all JSONL files to find messages for this session
-    for (const file of jsonlFiles) {
-      const jsonlFile = path.join(projectDir, file);
-      const fileStream = fsSync.createReadStream(jsonlFile);
-      const rl = readline.createInterface({
-        input: fileStream,
-        crlfDelay: Infinity
-      });
+    for (const projectDir of candidateProjectDirs) {
+      let files = [];
+      try {
+        files = await fs.readdir(projectDir);
+      } catch {
+        continue;
+      }
 
-      for await (const line of rl) {
-        if (line.trim()) {
-          try {
-            const entry = JSON.parse(line);
-            if (entry.sessionId === sessionId) {
-              messages.push(entry);
+      const jsonlFiles = files.filter(file => file.endsWith('.jsonl') && !file.startsWith('agent-'));
+      const agentFiles = files.filter(file => file.endsWith('.jsonl') && file.startsWith('agent-'));
+
+      for (const file of jsonlFiles) {
+        const jsonlFile = path.join(projectDir, file);
+        const fileStream = fsSync.createReadStream(jsonlFile);
+        const rl = readline.createInterface({
+          input: fileStream,
+          crlfDelay: Infinity
+        });
+
+        for await (const line of rl) {
+          if (line.trim()) {
+            try {
+              const entry = JSON.parse(line);
+              if (entry.sessionId === sessionId) {
+                messages.push(entry);
+              }
+            } catch (parseError) {
+              console.warn('Error parsing line:', parseError.message);
             }
-          } catch (parseError) {
-            console.warn('Error parsing line:', parseError.message);
           }
         }
       }
-    }
 
-    // Collect agentIds from Task tool results
-    const agentIds = new Set();
-    for (const message of messages) {
-      if (message.toolUseResult?.agentId) {
-        agentIds.add(message.toolUseResult.agentId);
+      if (messages.length === 0) {
+        continue;
       }
-    }
 
-    // Load agent tools for each agentId found
-    for (const agentId of agentIds) {
-      const agentFileName = `agent-${agentId}.jsonl`;
-      if (agentFiles.includes(agentFileName)) {
-        const agentFilePath = path.join(projectDir, agentFileName);
-        const tools = await parseAgentTools(agentFilePath);
-        agentToolsCache.set(agentId, tools);
+      const agentIds = new Set();
+      for (const message of messages) {
+        if (message.toolUseResult?.agentId) {
+          agentIds.add(message.toolUseResult.agentId);
+        }
       }
+
+      for (const agentId of agentIds) {
+        const agentFileName = `agent-${agentId}.jsonl`;
+        if (agentFiles.includes(agentFileName)) {
+          const agentFilePath = path.join(projectDir, agentFileName);
+          const tools = await parseAgentTools(agentFilePath);
+          agentToolsCache.set(agentId, tools);
+        }
+      }
+
+      break;
     }
 
     // Attach agent tools to their parent Task messages
@@ -1103,45 +1126,70 @@ async function renameProject(projectName, newDisplayName) {
 
 // Delete a session from a project
 async function deleteSession(projectName, sessionId) {
-  const projectDir = path.join(os.homedir(), '.claude', 'projects', projectName);
+  const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+  const candidateProjectDirs = [path.join(claudeProjectsDir, projectName)];
 
   try {
-    const files = await fs.readdir(projectDir);
-    const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
+    // Project names can drift after path-based project deduplication, so fall back
+    // to scanning all Claude project folders when the provided projectName misses.
+    try {
+      const allProjectDirs = await fs.readdir(claudeProjectsDir, { withFileTypes: true });
+      for (const entry of allProjectDirs) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
 
-    if (jsonlFiles.length === 0) {
-      throw new Error('No session files found for this project');
+        const fullPath = path.join(claudeProjectsDir, entry.name);
+        if (!candidateProjectDirs.includes(fullPath)) {
+          candidateProjectDirs.push(fullPath);
+        }
+      }
+    } catch {
+      // Ignore and fall back to the provided project directory only.
     }
 
-    // Check all JSONL files to find which one contains the session
-    for (const file of jsonlFiles) {
-      const jsonlFile = path.join(projectDir, file);
-      const content = await fs.readFile(jsonlFile, 'utf8');
-      const lines = content.split('\n').filter(line => line.trim());
+    for (const projectDir of candidateProjectDirs) {
+      let files = [];
+      try {
+        files = await fs.readdir(projectDir);
+      } catch {
+        continue;
+      }
 
-      // Check if this file contains the session
-      const hasSession = lines.some(line => {
-        try {
-          const data = JSON.parse(line);
-          return data.sessionId === sessionId;
-        } catch {
-          return false;
+      const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
+      for (const file of jsonlFiles) {
+        const jsonlFile = path.join(projectDir, file);
+        const content = await fs.readFile(jsonlFile, 'utf8');
+        const lines = content.split('\n').filter(line => line.trim());
+
+        const hasSession = lines.some(line => {
+          try {
+            const data = JSON.parse(line);
+            return data.sessionId === sessionId;
+          } catch {
+            return false;
+          }
+        });
+
+        if (!hasSession) {
+          continue;
         }
-      });
 
-      if (hasSession) {
-        // Filter out all entries for this session
         const filteredLines = lines.filter(line => {
           try {
             const data = JSON.parse(line);
             return data.sessionId !== sessionId;
           } catch {
-            return true; // Keep malformed lines
+            return true;
           }
         });
 
-        // Write back the filtered content
-        await fs.writeFile(jsonlFile, filteredLines.join('\n') + (filteredLines.length > 0 ? '\n' : ''));
+        if (filteredLines.length === 0) {
+          await fs.rm(jsonlFile, { force: true });
+        } else {
+          await fs.writeFile(jsonlFile, filteredLines.join('\n') + '\n');
+        }
+
         return true;
       }
     }
@@ -1413,6 +1461,173 @@ function pathsOverlap(leftPath, rightPath) {
   }
 
   return left.startsWith(right + path.sep) || right.startsWith(left + path.sep);
+}
+
+function mergeProjectSessionLists(primary = [], secondary = []) {
+  const merged = new Map();
+
+  for (const session of [...primary, ...secondary]) {
+    if (!session?.id) {
+      continue;
+    }
+
+    const existing = merged.get(session.id);
+    if (!existing) {
+      merged.set(session.id, session);
+      continue;
+    }
+
+    const existingActivity = new Date(existing.lastActivity || existing.timestamp || 0).getTime();
+    const nextActivity = new Date(session.lastActivity || session.timestamp || 0).getTime();
+
+    if (nextActivity >= existingActivity) {
+      merged.set(session.id, { ...existing, ...session });
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) => {
+    const leftActivity = new Date(left?.lastActivity || left?.timestamp || 0).getTime();
+    const rightActivity = new Date(right?.lastActivity || right?.timestamp || 0).getTime();
+    return rightActivity - leftActivity;
+  });
+}
+
+function mergeProjectEntries(primaryProject, secondaryProject) {
+  const primaryPath = normalizeComparablePath(primaryProject?.path || primaryProject?.fullPath);
+  const secondaryPath = normalizeComparablePath(secondaryProject?.path || secondaryProject?.fullPath);
+  const preferredProject = secondaryProject?.isCustomName && !primaryProject?.isCustomName
+    ? secondaryProject
+    : primaryProject;
+  const fallbackProject = preferredProject === primaryProject ? secondaryProject : primaryProject;
+
+  const mergedSessions = mergeProjectSessionLists(primaryProject?.sessions, secondaryProject?.sessions);
+  const mergedCodexSessions = mergeProjectSessionLists(primaryProject?.codexSessions, secondaryProject?.codexSessions);
+  const mergedGeminiSessions = mergeProjectSessionLists(primaryProject?.geminiSessions, secondaryProject?.geminiSessions);
+  const mergedCursorSessions = mergeProjectSessionLists(primaryProject?.cursorSessions, secondaryProject?.cursorSessions);
+
+  return {
+    ...fallbackProject,
+    ...preferredProject,
+    name: preferredProject?.name || fallbackProject?.name,
+    path: primaryPath || secondaryPath || preferredProject?.path || fallbackProject?.path,
+    fullPath: primaryPath || secondaryPath || preferredProject?.fullPath || fallbackProject?.fullPath,
+    displayName: preferredProject?.displayName || fallbackProject?.displayName,
+    isCustomName: Boolean(primaryProject?.isCustomName || secondaryProject?.isCustomName),
+    isManuallyAdded: Boolean(primaryProject?.isManuallyAdded || secondaryProject?.isManuallyAdded),
+    sessions: mergedSessions,
+    codexSessions: mergedCodexSessions,
+    geminiSessions: mergedGeminiSessions,
+    cursorSessions: mergedCursorSessions,
+    sessionMeta: {
+      hasMore: Boolean(primaryProject?.sessionMeta?.hasMore || secondaryProject?.sessionMeta?.hasMore),
+      total: Math.max(
+        primaryProject?.sessionMeta?.total || primaryProject?.sessions?.length || 0,
+        secondaryProject?.sessionMeta?.total || secondaryProject?.sessions?.length || 0,
+        mergedSessions.length
+      )
+    },
+    taskmaster: primaryProject?.taskmaster?.hasTaskmaster ? primaryProject.taskmaster : secondaryProject?.taskmaster
+  };
+}
+
+function dedupeProjectsByResolvedPath(projects) {
+  const projectsByPath = new Map();
+  const pathlessProjects = [];
+
+  for (const project of projects) {
+    const resolvedPath = normalizeComparablePath(project?.path || project?.fullPath);
+
+    if (!resolvedPath) {
+      pathlessProjects.push(project);
+      continue;
+    }
+
+    const existing = projectsByPath.get(resolvedPath);
+    if (!existing) {
+      projectsByPath.set(resolvedPath, {
+        ...project,
+        path: resolvedPath,
+        fullPath: resolvedPath
+      });
+      continue;
+    }
+
+    projectsByPath.set(resolvedPath, mergeProjectEntries(existing, project));
+  }
+
+  return [...projectsByPath.values(), ...pathlessProjects];
+}
+
+async function filterPlaceholderProjects(projects) {
+  const projectStats = projects.map(project => ({
+    project,
+    normalizedPath: normalizeComparablePath(project?.path || project?.fullPath),
+    displayName: (project?.displayName || '').trim().toLowerCase(),
+    totalSessions:
+      (project?.sessions?.length || 0) +
+      (project?.codexSessions?.length || 0) +
+      (project?.geminiSessions?.length || 0) +
+      (project?.cursorSessions?.length || 0)
+  }));
+
+  const existingPathSet = new Set();
+
+  await Promise.all(projectStats.map(async ({ normalizedPath }) => {
+    if (!normalizedPath) {
+      return;
+    }
+
+    try {
+      await fs.access(normalizedPath);
+      existingPathSet.add(normalizedPath);
+    } catch {
+      // Ignore decode fallbacks that do not exist on disk.
+    }
+  }));
+
+  return projectStats
+    .filter(({ project, normalizedPath, displayName, totalSessions }) => {
+      if (!normalizedPath || !displayName) {
+        return true;
+      }
+
+      const betterNamedCandidate = projectStats.some((candidate) => {
+        if (candidate.project === project) {
+          return false;
+        }
+
+        if (candidate.displayName !== displayName) {
+          return false;
+        }
+
+        return candidate.totalSessions > totalSessions;
+      });
+
+      if (totalSessions === 0 && betterNamedCandidate) {
+        return false;
+      }
+
+      if (existingPathSet.has(normalizedPath) || totalSessions > 0) {
+        return true;
+      }
+
+      return !projectStats.some((candidate) => {
+        if (candidate.project === project) {
+          return false;
+        }
+
+        if (candidate.displayName !== displayName) {
+          return false;
+        }
+
+        if (candidate.totalSessions <= 0) {
+          return false;
+        }
+
+        return existingPathSet.has(candidate.normalizedPath);
+      });
+    })
+    .map(({ project }) => project);
 }
 
 async function findCodexJsonlFiles(dir) {

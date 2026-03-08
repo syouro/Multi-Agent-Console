@@ -21,11 +21,101 @@ function buildArtifacts(artifacts = []) {
         .map((artifact) => artifact.trim());
 }
 
+function parseDelimitedList(value) {
+    if (typeof value !== 'string') {
+        return [];
+    }
+
+    return value
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+}
+
+export function parsePantheonHandoff(text) {
+    if (typeof text !== 'string' || !text.trim()) {
+        return null;
+    }
+
+    const lines = text.replace(/\r\n/g, '\n').split('\n');
+
+    while (lines.length > 0 && !lines[lines.length - 1].trim()) {
+        lines.pop();
+    }
+
+    let targetIndex = -1;
+    let target = null;
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const normalized = normalizeTarget(lines[index]);
+        if (normalized) {
+            targetIndex = index;
+            target = normalized;
+            break;
+        }
+    }
+
+    if (targetIndex === -1 || !target) {
+        return null;
+    }
+
+    const blockLines = lines.slice(targetIndex + 1);
+    if (blockLines.length === 0) {
+        return null;
+    }
+
+    const fields = new Map();
+    let currentKey = null;
+
+    for (const rawLine of blockLines) {
+        const line = rawLine.trimEnd();
+        if (!line.trim()) {
+            continue;
+        }
+
+        const fieldMatch = line.match(/^([a-zA-Z][a-zA-Z0-9_-]*)\s*:\s*(.*)$/);
+        if (fieldMatch) {
+            currentKey = fieldMatch[1].toLowerCase();
+            fields.set(currentKey, fieldMatch[2].trim());
+            continue;
+        }
+
+        if (currentKey) {
+            const previousValue = fields.get(currentKey) || '';
+            fields.set(currentKey, previousValue ? `${previousValue}\n${line.trim()}` : line.trim());
+        }
+    }
+
+    const task = fields.get('task') || '';
+    const note = fields.get('note') || '';
+    const messageParts = [];
+    if (task) {
+        messageParts.push(task);
+    }
+    if (note) {
+        messageParts.push(`Note: ${note}`);
+    }
+
+    const message = messageParts.join('\n\n').trim();
+    if (!message) {
+        return null;
+    }
+
+    return {
+        to: target,
+        message,
+        artifacts: buildArtifacts(parseDelimitedList(fields.get('artifacts'))),
+        rawBlock: lines.slice(targetIndex).join('\n').trim(),
+        body: lines.slice(0, targetIndex).join('\n').trim()
+    };
+}
+
 export function formatPantheonHandoffPrompt(event) {
     const artifacts = buildArtifacts(event.artifacts);
     const artifactLines = artifacts.length
         ? artifacts.map((artifact) => `- ${artifact}`).join('\n')
         : '- None provided';
+
+    const returnTarget = event.from && event.from !== 'human' ? event.from : 'human';
 
     return `[Pantheon Handoff]
 From: ${event.from || 'unknown'}
@@ -35,6 +125,14 @@ Relevant files:
 ${artifactLines}
 Task:
 ${event.message || 'No task provided'}
+
+When you finish, pass control back by ending your response with a handoff block on its own lines (no extra text on the same line):
+
+@${returnTarget}
+task: <brief description of what you completed and what needs to happen next>
+note: <any context the next agent needs>
+
+If no further action is needed, use @human instead and summarize what was done.
 `;
 }
 
@@ -85,7 +183,8 @@ export async function registerPantheonSession(workspacePath, input = {}) {
         message: typeof input.message === 'string' ? input.message.trim() : 'Registered Pantheon session',
         summary: typeof input.summary === 'string' ? input.summary.trim() : null,
         context: {
-            projectName: typeof input.projectName === 'string' ? input.projectName : null
+            projectName: typeof input.projectName === 'string' ? input.projectName : null,
+            workspacePath: typeof input.workspacePath === 'string' ? input.workspacePath : workspacePath
         },
         status: 'registered'
     });
@@ -107,7 +206,8 @@ export async function unregisterPantheonSession(workspacePath, input = {}) {
         message: typeof input.message === 'string' ? input.message.trim() : 'Unregistered Pantheon session',
         summary: typeof input.summary === 'string' ? input.summary.trim() : null,
         context: {
-            projectName: typeof input.projectName === 'string' ? input.projectName : null
+            projectName: typeof input.projectName === 'string' ? input.projectName : null,
+            workspacePath: typeof input.workspacePath === 'string' ? input.workspacePath : workspacePath
         },
         status: 'removed'
     });

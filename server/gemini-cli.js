@@ -369,6 +369,7 @@ async function spawnGemini(command, options = {}, ws) {
 
             ws.send({
                 type: 'claude-complete', // Use claude-complete for compatibility with UI
+                provider: 'gemini',
                 sessionId: finalSessionId,
                 exitCode: code,
                 isNewSession: !sessionId && !!command // Flag to indicate this was a new session

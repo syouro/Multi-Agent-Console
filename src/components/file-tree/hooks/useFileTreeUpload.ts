@@ -1,9 +1,11 @@
 import { useCallback, useState, useRef } from 'react';
-import type { Project } from '../../../types/app';
+import type { Project, ProjectSession } from '../../../types/app';
 import { api } from '../../../utils/api';
+import { getSessionWorkspacePath } from '../../../utils/sessionWorkspacePath';
 
 type UseFileTreeUploadOptions = {
   selectedProject: Project | null;
+  selectedSession: ProjectSession | null;
   onRefresh: () => void;
   showToast: (message: string, type: 'success' | 'error') => void;
 };
@@ -59,6 +61,7 @@ const readAllDirectoryEntries = async (directoryEntry: FileSystemDirectoryEntry,
 
 export const useFileTreeUpload = ({
   selectedProject,
+  selectedSession,
   onRefresh,
   showToast,
 }: UseFileTreeUploadOptions) => {
@@ -66,6 +69,7 @@ export const useFileTreeUpload = ({
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [operationLoading, setOperationLoading] = useState(false);
   const treeRef = useRef<HTMLDivElement>(null);
+  const workspacePath = getSessionWorkspacePath(selectedProject, selectedSession);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -152,11 +156,11 @@ export const useFileTreeUpload = ({
 
       // Send relative paths as a JSON array
       formData.append('relativePaths', JSON.stringify(relativePaths));
+      if (workspacePath) {
+        formData.append('workspacePath', workspacePath);
+      }
 
-      const response = await api.post(
-        `/projects/${encodeURIComponent(selectedProject!.name)}/files/upload`,
-        formData
-      );
+      const response = await api.uploadFiles(selectedProject!.name, formData, workspacePath);
 
       if (!response.ok) {
         const data = await response.json();
@@ -175,7 +179,7 @@ export const useFileTreeUpload = ({
       setOperationLoading(false);
       setDropTarget(null);
     }
-  }, [dropTarget, selectedProject, onRefresh, showToast]);
+  }, [dropTarget, selectedProject, onRefresh, showToast, workspacePath]);
 
   const handleItemDragOver = useCallback((e: React.DragEvent, itemPath: string) => {
     e.preventDefault();

@@ -11,6 +11,7 @@ import type {
 } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { authenticatedFetch } from '../../../utils/api';
+import { getSessionWorkspacePath } from '../../../utils/sessionWorkspacePath';
 import { thinkingModes } from '../constants/thinkingModes';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import { safeLocalStorage } from '../utils/chatStorage';
@@ -602,7 +603,7 @@ export function useChatComposerState({
       };
 
       const toolsSettings = getToolsSettings();
-      const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
+      const resolvedProjectPath = getSessionWorkspacePath(selectedProject, selectedSession);
 
       if (provider === 'cursor') {
         sendMessage({

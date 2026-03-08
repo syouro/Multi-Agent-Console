@@ -141,7 +141,7 @@ function MainContent({
 
           {activeTab === 'files' && (
             <div className="h-full overflow-hidden">
-              <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+              <FileTree selectedProject={selectedProject} selectedSession={selectedSession} onFileOpen={handleFileOpen} />
             </div>
           )}
 

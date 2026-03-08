@@ -690,7 +690,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
     console.log('Streaming complete, sending claude-complete event');
     ws.send({
       type: 'claude-complete',
-      sessionId: capturedSessionId,
+      sessionId: capturedSessionId || sessionId || null,
       exitCode: 0,
       isNewSession: !sessionId && !!command
     });

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
 import { api, authenticatedFetch } from '../../../utils/api';
+import { getSessionWorkspacePath } from '../../../utils/sessionWorkspacePath';
 import type { ChatMessage, Provider } from '../types/types';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import { safeLocalStorage } from '../utils/chatStorage';
@@ -418,7 +419,7 @@ export function useChatSessionState({
           sessionStorage.setItem('cursorSessionId', selectedSession.id);
 
           if (!isSystemSessionChange) {
-            const projectPath = selectedProject.fullPath || selectedProject.path || '';
+            const projectPath = getSessionWorkspacePath(selectedProject, selectedSession);
             const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
             setSessionMessages([]);
             setChatMessages(converted);
@@ -492,7 +493,7 @@ export function useChatSessionState({
         const provider = (localStorage.getItem('selected-provider') as Provider) || 'claude';
 
         if (provider === 'cursor') {
-          const projectPath = selectedProject.fullPath || selectedProject.path || '';
+          const projectPath = getSessionWorkspacePath(selectedProject, selectedSession);
           const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
           setSessionMessages([]);
           setChatMessages(converted);

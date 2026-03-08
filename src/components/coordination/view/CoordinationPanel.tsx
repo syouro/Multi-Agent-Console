@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { GitBranchPlus, RefreshCw, Send } from 'lucide-react';
 import type { Project, ProjectSession } from '../../../types/app';
+import { getProjectWorkspacePath, getSessionWorkspacePath } from '../../../utils/sessionWorkspacePath';
 
 type PantheonEvent = {
     id: string;
@@ -55,23 +56,6 @@ const STATIC_TARGETS = [
     { value: 'all', label: '@all' }
 ];
 
-function getWorkspacePath(project: Project) {
-    return project.path || project.fullPath;
-}
-
-function getSessionWorkspacePath(session: ProjectSession | null, project: Project) {
-    if (!session) {
-        return getWorkspacePath(project);
-    }
-
-    const sessionWithPaths = session as ProjectSession & {
-        cwd?: string | null;
-        projectPath?: string | null;
-    };
-
-    return sessionWithPaths.cwd || sessionWithPaths.projectPath || getWorkspacePath(project);
-}
-
 function formatTimestamp(value?: string) {
     if (!value) {
         return '';
@@ -124,8 +108,8 @@ export default function CoordinationPanel({
     latestMessage,
     isConnected
 }: CoordinationPanelProps) {
-    const workspacePath = getWorkspacePath(selectedProject);
-    const sessionWorkspacePath = getSessionWorkspacePath(selectedSession, selectedProject);
+    const workspacePath = getProjectWorkspacePath(selectedProject);
+    const sessionWorkspacePath = getSessionWorkspacePath(selectedProject, selectedSession);
     const [events, setEvents] = useState<PantheonEvent[]>([]);
     const [state, setState] = useState<PantheonState | null>(null);
     const [target, setTarget] = useState('claude');
@@ -134,15 +118,15 @@ export default function CoordinationPanel({
     const [artifacts, setArtifacts] = useState('whiteboard.md');
 
     useEffect(() => {
-        if (!isConnected || !workspacePath) {
+        if (!isConnected || !sessionWorkspacePath) {
             return;
         }
 
         sendMessage({
             type: 'pantheon:sync',
-            workspacePath
+            workspacePath: sessionWorkspacePath
         });
-    }, [isConnected, workspacePath, sendMessage]);
+    }, [isConnected, sessionWorkspacePath, sendMessage]);
 
     useEffect(() => {
         if (!latestMessage || typeof latestMessage !== 'object') {
@@ -150,7 +134,7 @@ export default function CoordinationPanel({
         }
 
         const payload = latestMessage as { type?: string; workspacePath?: string; events?: PantheonEvent[]; event?: PantheonEvent; state?: PantheonState };
-        if (payload.workspacePath !== workspacePath) {
+        if (payload.workspacePath !== sessionWorkspacePath) {
             return;
         }
 
@@ -167,7 +151,7 @@ export default function CoordinationPanel({
         if (payload.type === 'pantheon:event-list') {
             setEvents(payload.events || []);
         }
-    }, [latestMessage, workspacePath]);
+    }, [latestMessage, sessionWorkspacePath]);
 
     const recentEvents = useMemo(() => events.slice(-20).reverse(), [events]);
     const registeredSessions = state?.registeredSessions || [];
@@ -198,7 +182,7 @@ export default function CoordinationPanel({
     const handleRefresh = () => {
         sendMessage({
             type: 'pantheon:sync',
-            workspacePath
+            workspacePath: sessionWorkspacePath
         });
     };
 
@@ -256,7 +240,7 @@ export default function CoordinationPanel({
 
         sendMessage({
             type: 'pantheon:create-handoff',
-            workspacePath,
+            workspacePath: sessionWorkspacePath,
             sessionId: selectedSession?.id || null,
             provider: detectProvider(selectedProject, selectedSession),
             from: 'human',
@@ -348,6 +332,16 @@ export default function CoordinationPanel({
                             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Current Task</div>
                             <div className="mt-2 text-sm text-foreground">{state?.currentTask || 'No active task'}</div>
                             <div className="mt-3 text-xs text-muted-foreground">Owner: {state?.activeOwner || 'Unassigned'}</div>
+                        </section>
+
+                        <section className="rounded-lg border border-border/70 bg-card px-3 py-3">
+                            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Workspace Path</div>
+                            <div className="mt-2 break-all text-sm text-foreground">{sessionWorkspacePath || workspacePath || 'Unknown'}</div>
+                            {sessionWorkspacePath && workspacePath && sessionWorkspacePath !== workspacePath && (
+                                <div className="mt-2 break-all text-xs text-muted-foreground">
+                                    Project: {workspacePath}
+                                </div>
+                            )}
                         </section>
 
                         <section className="rounded-lg border border-border/70 bg-card px-3 py-3">

@@ -11,7 +11,7 @@ import { useFileTreeViewMode } from '../hooks/useFileTreeViewMode';
 import { useFileTreeUpload } from '../hooks/useFileTreeUpload';
 import type { FileTreeImageSelection, FileTreeNode } from '../types/types';
 import { formatFileSize, formatRelativeTime, isImageFile } from '../utils/fileTreeUtils';
-import { Project } from '../../../types/app';
+import { Project, ProjectSession } from '../../../types/app';
 import { ScrollArea, Input } from '../../../shared/view/ui';
 import FileTreeBody from './FileTreeBody';
 import FileTreeDetailedColumns from './FileTreeDetailedColumns';
@@ -22,10 +22,11 @@ import ImageViewer from './ImageViewer';
 
 type FileTreeProps = {
   selectedProject: Project | null;
+  selectedSession: ProjectSession | null;
   onFileOpen?: (filePath: string) => void;
 };
 
-export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps) {
+export default function FileTree({ selectedProject, selectedSession, onFileOpen }: FileTreeProps) {
   const { t } = useTranslation();
   const [selectedImage, setSelectedImage] = useState<FileTreeImageSelection | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -45,7 +46,7 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
     }
   }, [toast]);
 
-  const { files, loading, refreshFiles } = useFileTreeData(selectedProject);
+  const { files, loading, refreshFiles } = useFileTreeData(selectedProject, selectedSession);
   const { viewMode, changeViewMode } = useFileTreeViewMode();
   const { expandedDirs, toggleDirectory, expandDirectories, collapseAll } = useExpandedDirectories();
   const { searchQuery, setSearchQuery, filteredFiles } = useFileTreeSearch({
@@ -56,6 +57,7 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
   // File operations
   const operations = useFileTreeOperations({
     selectedProject,
+    selectedSession,
     onRefresh: refreshFiles,
     showToast,
   });
@@ -63,6 +65,7 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
   // File upload (drag and drop)
   const upload = useFileTreeUpload({
     selectedProject,
+    selectedSession,
     onRefresh: refreshFiles,
     showToast,
   });

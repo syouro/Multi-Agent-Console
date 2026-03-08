@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../../utils/api';
-import type { Project } from '../../../types/app';
+import type { Project, ProjectSession } from '../../../types/app';
+import { getSessionWorkspacePath } from '../../../utils/sessionWorkspacePath';
 import type { FileTreeNode } from '../types/types';
 
 type UseFileTreeDataResult = {
@@ -9,7 +10,10 @@ type UseFileTreeDataResult = {
   refreshFiles: () => void;
 };
 
-export function useFileTreeData(selectedProject: Project | null): UseFileTreeDataResult {
+export function useFileTreeData(
+  selectedProject: Project | null,
+  selectedSession: ProjectSession | null = null,
+): UseFileTreeDataResult {
   const [files, setFiles] = useState<FileTreeNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -21,6 +25,7 @@ export function useFileTreeData(selectedProject: Project | null): UseFileTreeDat
 
   useEffect(() => {
     const projectName = selectedProject?.name;
+    const workspacePath = getSessionWorkspacePath(selectedProject, selectedSession);
 
     if (!projectName) {
       setFiles([]);
@@ -42,7 +47,11 @@ export function useFileTreeData(selectedProject: Project | null): UseFileTreeDat
         setLoading(true);
       }
       try {
-        const response = await api.getFiles(projectName, { signal: abortControllerRef.current!.signal });
+        const response = await api.getFiles(
+          projectName,
+          { signal: abortControllerRef.current!.signal },
+          workspacePath,
+        );
 
         if (!response.ok) {
           const errorText = await response.text();
@@ -79,7 +88,7 @@ export function useFileTreeData(selectedProject: Project | null): UseFileTreeDat
       isActive = false;
       abortControllerRef.current?.abort();
     };
-  }, [selectedProject?.name, refreshKey]);
+  }, [selectedProject?.name, selectedSession?.id, refreshKey]);
 
   return {
     files,
