@@ -97,9 +97,34 @@ Server entrypoint:
 
 ### Claude Code
 
-Point Claude Code at the local Pantheon MCP server with provider identity `claude`.
+Register the Pantheon MCP server at user scope so it is available in all Claude Code sessions:
 
-The MCP server ultimately forwards to:
+```bash
+claude mcp add --scope user pantheon -- \
+  node /path/to/claudecodeui/server/pantheon/mcp-server.js \
+  --provider claude \
+  --base-url http://127.0.0.1:3001
+```
+
+Or edit `~/.claude.json` directly:
+
+```json
+{
+  "mcpServers": {
+    "pantheon": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "/path/to/claudecodeui/server/pantheon/mcp-server.js",
+        "--provider", "claude",
+        "--base-url", "http://127.0.0.1:3001"
+      ]
+    }
+  }
+}
+```
+
+The MCP server forwards calls to:
 
 - `POST /api/pantheon/handoff`
 

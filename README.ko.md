@@ -97,9 +97,34 @@ npm run server
 
 ### Claude Code
 
-Claude Code에서 로컬 Pantheon MCP server를 참조하고, provider identity를 `claude`로 설정합니다.
+Pantheon MCP server를 user 범위로 등록하여 모든 Claude Code 세션에서 사용할 수 있게 합니다:
 
-이 MCP server는 최종적으로 다음으로 전달됩니다.
+```bash
+claude mcp add --scope user pantheon -- \
+  node /path/to/claudecodeui/server/pantheon/mcp-server.js \
+  --provider claude \
+  --base-url http://127.0.0.1:3001
+```
+
+또는 `~/.claude.json`을 직접 편집합니다:
+
+```json
+{
+  "mcpServers": {
+    "pantheon": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "/path/to/claudecodeui/server/pantheon/mcp-server.js",
+        "--provider", "claude",
+        "--base-url", "http://127.0.0.1:3001"
+      ]
+    }
+  }
+}
+```
+
+MCP server는 최종적으로 다음으로 전달됩니다:
 
 - `POST /api/pantheon/handoff`
 
