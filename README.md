@@ -1,21 +1,28 @@
 <div align="center">
-  <img src="public/logo.svg" alt="CloudCLI UI" width="64" height="64">
-  <h1>Cloud CLI (aka Claude Code UI)</h1>
+  <img src="public/logo.svg" alt="Multi-Agent Console" width="64" height="64">
+  <h1>Multi-Agent Console</h1>
 </div>
 
 
-A desktop and mobile UI for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Cursor CLI](https://docs.cursor.com/en/cli/overview), [Codex](https://developers.openai.com/codex), and [Gemini-CLI](https://geminicli.com/). You can use it locally or remotely to view your active projects and sessions and make changes to them from everywhere (mobile or desktop). This gives you a proper interface that works everywhere.
+A desktop and mobile UI for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Cursor CLI](https://docs.cursor.com/en/cli/overview), [Codex](https://developers.openai.com/codex), and [Gemini CLI](https://geminicli.com/). It lets you inspect projects, resume sessions, open shell terminals, and coordinate multiple agent CLIs from one browser UI.
 
 <p align="center">
-  <a href="https://cloudcli.ai">CloudCLI Cloud</a> · <a href="https://discord.gg/buxwujPNRE">Discord</a> · <a href="https://github.com/siteboon/claudecodeui/issues">Bug Reports</a> · <a href="CONTRIBUTING.md">Contributing</a>
-</p>
-
-<p align="center">
-  <a href="https://discord.gg/buxwujPNRE"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Join our Discord"></a>
-  <a href="https://trendshift.io/repositories/15586" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15586" alt="siteboon%2Fclaudecodeui | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+  <a href="https://github.com/siteboon/claudecodeui">Upstream Project</a> · <a href="https://github.com/siteboon/claudecodeui/issues">Upstream Issues</a> · <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 <div align="right"><i><b>English</b> · <a href="./README.ko.md">한국어</a> · <a href="./README.zh-CN.md">中文</a> · <a href="./README.ja.md">日本語</a></i></div>
+
+## Fork Notice
+
+This repository started as a fork of [`siteboon/claudecodeui`](https://github.com/siteboon/claudecodeui) and has been heavily modified.
+
+The current fork includes substantial custom work, including:
+
+- Multi-agent coordination primitives and a `Coordination` panel
+- Pantheon event sourcing, handoff routing, and approval-center groundwork
+- Improved Claude, Codex, and Gemini session discovery
+- Session resume fixes for mismatched workspace paths and Gemini resume identifiers
+- Product/UI cleanup for a self-hosted multi-agent workflow
 
 ## Screenshots
 
@@ -64,22 +71,15 @@ A desktop and mobile UI for [Claude Code](https://docs.anthropic.com/en/docs/cla
 
 ## Quick Start
 
-### CloudCLI Cloud (Recommended)
+### Self-Hosted
 
-The fastest way to get started — no local setup required. Get a fully managed, containerized development environment accessible from the web, mobile app, API, or your favorite IDE.
-
-**[Get started with CloudCLI Cloud](https://cloudcli.ai)**
-
-
-### Self-Hosted (Open source)
-
-Try CloudCLI UI instantly with **npx** (requires **Node.js** v22+):
+Try Multi-Agent Console instantly with **npx** (requires **Node.js** v22+):
 
 ```
 npx @siteboon/claude-code-ui
 ```
 
-Or install **globally** for regular use:
+Or install it **globally** for regular use:
 
 ```
 npm install -g @siteboon/claude-code-ui
@@ -88,33 +88,7 @@ cloudcli
 
 Open `http://localhost:3001` — all your existing sessions are discovered automatically.
 
-Visit the **[documentation →](https://cloudcli.ai/docs)** for more full configuration options, PM2, remote server setup and more
-
-
----
-
-## Which option is right for you?
-
-CloudCLI UI is the open source UI layer that powers CloudCLI Cloud. You can self-host it on your own machine, or use CloudCLI Cloud which builds on top of it with a full managed cloud environment, team features, and deeper integrations.
-
-| | CloudCLI UI (Self-hosted) | CloudCLI Cloud |
-|---|---|---|
-| **Best for** | Developers who want a full UI for local agent sessions on their own machine | Teams and developers who want agents running in the cloud, accessible from anywhere |
-| **How you access it** | Browser via `[yourip]:port` | Browser, any IDE, REST API, n8n |
-| **Setup** | `npx @siteboon/claude-code-ui` | No setup required |
-| **Machine needs to stay on** | Yes | No |
-| **Mobile access** | Any browser on your network | Any device, native app coming |
-| **Sessions available** | All sessions auto-discovered from `~/.claude` | All sessions within your cloud environment |
-| **Agents supported** | Claude Code, Cursor CLI, Codex, Gemini CLI | Claude Code, Cursor CLI, Codex, Gemini CLI |
-| **File explorer and Git** | Yes, built into the UI | Yes, built into the UI |
-| **MCP configuration** | Managed via UI, synced with your local `~/.claude` config | Managed via UI |
-| **IDE access** | Your local IDE | Any IDE connected to your cloud environment |
-| **REST API** | Yes | Yes |
-| **n8n node** | No | Yes |
-| **Team sharing** | No | Yes |
-| **Platform cost** | Free, open source | Starts at $7/month |
-
-> Both options use your own AI subscriptions (Claude, Cursor, etc.) — CloudCLI provides the environment, not the AI.
+This fork currently focuses on self-hosted workflows. If you want a managed hosted service, refer to the upstream project and its documentation.
 
 ---
 
@@ -147,36 +121,35 @@ To use Claude Code's full functionality, you'll need to manually enable tools:
 
 Claude Code Remote Control lets you send messages to a session already running in your local terminal. Your machine has to stay on, your terminal has to stay open, and sessions time out after roughly 10 minutes without a network connection.
 
-CloudCLI UI and CloudCLI Cloud extend Claude Code rather than sit alongside it — your MCP servers, permissions, settings, and sessions are the exact same ones Claude Code uses natively. Nothing is duplicated or managed separately.
+Multi-Agent Console extends the same local CLI sessions rather than wrapping them in a separate agent runtime. Your MCP servers, permissions, settings, and sessions stay close to the official tools.
 
 Here's what that means in practice:
 
-- **All your sessions, not just one** — CloudCLI UI auto-discovers every session from your `~/.claude` folder. Remote Control only exposes the single active session to make it available in the Claude mobile app.
-- **Your settings are your settings** — MCP servers, tool permissions, and project config you change in CloudCLI UI are written directly to your Claude Code config and take effect immediately, and vice versa.
+- **All your sessions, not just one** — the UI auto-discovers sessions from local agent state rather than exposing only one active terminal.
+- **Your settings stay local** — configuration changes stay close to the underlying CLI tools and project files.
 - **Works with more agents** — Claude Code, Cursor CLI, Codex, and Gemini CLI, not just Claude Code.
 - **Full UI, not just a chat window** — file explorer, Git integration, MCP management, and a shell terminal are all built in.
-- **CloudCLI Cloud runs in the cloud** — close your laptop, the agent keeps running. No terminal to babysit, no machine to keep awake.
 
 </details>
 
 <details>
 <summary>Do I need to pay for an AI subscription separately?</summary>
 
-Yes. CloudCLI provides the environment, not the AI. You bring your own Claude, Cursor, Codex, or Gemini subscription. CloudCLI Cloud starts at $7/month for the hosted environment on top of that.
+Yes. This project is only the UI and orchestration layer. You bring your own Claude, Cursor, Codex, or Gemini subscriptions.
 
 </details>
 
 <details>
-<summary>Can I use CloudCLI UI on my phone?</summary>
+<summary>Can I use Multi-Agent Console on my phone?</summary>
 
-Yes. For self-hosted, run the server on your machine and open `[yourip]:port` in any browser on your network. For CloudCLI Cloud, open it from any device — no VPN, no port forwarding, no setup. A native app is also in the works.
+Yes. Run the server on your machine and open `[yourip]:port` in any browser on your network or through your own reverse proxy.
 
 </details>
 
 <details>
 <summary>Will changes I make in the UI affect my local Claude Code setup?</summary>
 
-Yes, for self-hosted. CloudCLI UI reads from and writes to the same `~/.claude` config that Claude Code uses natively. MCP servers you add via the UI show up in Claude Code immediately and vice versa.
+Yes, for self-hosted setups that point at your real local agent configuration. Changes made through the UI can affect the same sessions, config files, and workspaces used by the official CLIs.
 
 </details>
 
@@ -184,9 +157,8 @@ Yes, for self-hosted. CloudCLI UI reads from and writes to the same `~/.claude` 
 
 ## Community & Support
 
-- **[Documentation](https://cloudcli.ai/docs)** — installation, configuration, features, and troubleshooting
-- **[Discord](https://discord.gg/buxwujPNRE)** — get help and connect with other users
-- **[GitHub Issues](https://github.com/siteboon/claudecodeui/issues)** — bug reports and feature requests
+- **[Upstream Repository](https://github.com/siteboon/claudecodeui)** — original project this fork builds on
+- **This fork's GitHub Issues** — bug reports and feature requests for your fork
 - **[Contributing Guide](CONTRIBUTING.md)** — how to contribute to the project
 
 ## License
@@ -209,10 +181,6 @@ This project is open source and free to use, modify, and distribute under the GP
 - **[TaskMaster AI](https://github.com/eyaltoledano/claude-task-master)** *(Optional)* - AI-powered project management and task planning
 
 
-### Sponsors
-- [Siteboon - AI powered website builder](https://siteboon.ai)
----
-
 <div align="center">
-  <strong>Made with care for the Claude Code, Cursor and Codex community.</strong>
+  <strong>Built for self-hosted multi-agent workflows.</strong>
 </div>
