@@ -68,7 +68,7 @@ import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './d
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
 import { appendPantheonEvent, syncPantheonWorkspace, loadPantheonEvents } from './pantheon/events.js';
-import { createPantheonHandoff, registerPantheonSession, unregisterPantheonSession } from './pantheon/bus.js';
+import { createPantheonHandoff, parsePantheonHandoff, registerPantheonSession, unregisterPantheonSession } from './pantheon/bus.js';
 import { normalizeClaudeApprovalDecision, normalizeClaudeApprovalRequest } from './pantheon/approvals.js';
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
@@ -105,13 +105,35 @@ function broadcastPantheonPayload(payload) {
     });
 }
 
+function isPantheonSessionAttached(entry) {
+    if (!entry?.workspacePath || !entry?.sessionId) {
+        return false;
+    }
+
+    return ptySessionsMap.has(`${entry.workspacePath}_${entry.sessionId}`);
+}
+
+function enrichPantheonState(state) {
+    if (!state || !Array.isArray(state.registeredSessions)) {
+        return state;
+    }
+
+    return {
+        ...state,
+        registeredSessions: state.registeredSessions.map((entry) => ({
+            ...entry,
+            attached: isPantheonSessionAttached(entry)
+        }))
+    };
+}
+
 async function broadcastPantheonEvent(workspacePath, eventInput, extra = {}) {
     const result = await appendPantheonEvent(workspacePath, eventInput);
     broadcastPantheonPayload({
         type: 'pantheon:event',
         workspacePath: result.event.workspacePath,
         event: result.event,
-        state: result.state,
+        state: enrichPantheonState(result.state),
         ...extra
     });
     return result;
@@ -187,6 +209,11 @@ async function resolveGeminiResumeSessionId(projectPath, sessionId) {
     }
 
     return sessionId;
+}
+
+async function resolveProviderSessionWorkspacePath(provider, sessionId, fallbackWorkspacePath = null) {
+    const resolvedWorkspacePath = await findWorkspacePathForProviderSession(provider, sessionId);
+    return resolvedWorkspacePath || fallbackWorkspacePath || null;
 }
 
 async function findWorkspacePathForClaudeSession(sessionId) {
@@ -1575,114 +1602,478 @@ function handleChatConnection(ws) {
 
     // Wrap WebSocket with writer for consistent interface with SSEStreamWriter
     const writer = new WebSocketWriter(ws);
+    const sessionContexts = new Map();
+    const responseBuffers = new Map();
+    let pendingCommandContext = null;
+
+    const getProviderSessions = (project, provider) => {
+        if (!project) {
+            return [];
+        }
+
+        if (provider === 'codex') {
+            return project.codexSessions || [];
+        }
+
+        if (provider === 'gemini') {
+            return project.geminiSessions || [];
+        }
+
+        if (provider === 'cursor') {
+            return project.cursorSessions || [];
+        }
+
+        return project.sessions || [];
+    };
+
+    const getLatestSessionId = (project, provider) => {
+        const sessions = [...getProviderSessions(project, provider)];
+        sessions.sort((left, right) => {
+            const leftTime = new Date(left.updated_at || left.lastActivity || left.createdAt || left.created_at || 0).getTime();
+            const rightTime = new Date(right.updated_at || right.lastActivity || right.createdAt || right.created_at || 0).getTime();
+            return rightTime - leftTime;
+        });
+
+        return sessions[0]?.id || null;
+    };
+
+    const getSessionContextKey = (provider, sessionId) => `${provider}:${sessionId}`;
+
+    const rememberSessionContext = (provider, sessionId, workspacePath) => {
+        if (!provider || !sessionId || !workspacePath) {
+            return;
+        }
+        sessionContexts.set(getSessionContextKey(provider, sessionId), {
+            provider,
+            sessionId,
+            workspacePath
+        });
+    };
+
+    const getSessionContext = (provider, sessionId) => {
+        if (!provider || !sessionId) {
+            return null;
+        }
+        return sessionContexts.get(getSessionContextKey(provider, sessionId)) || null;
+    };
+
+    const appendResponseBuffer = (provider, sessionId, chunk) => {
+        if (!provider || !sessionId || typeof chunk !== 'string' || !chunk) {
+            return;
+        }
+
+        const key = getSessionContextKey(provider, sessionId);
+        const previous = responseBuffers.get(key) || '';
+        responseBuffers.set(key, `${previous}${chunk}`);
+    };
+
+    const consumeResponseBuffer = (provider, sessionId) => {
+        if (!provider || !sessionId) {
+            return '';
+        }
+
+        const key = getSessionContextKey(provider, sessionId);
+        const value = responseBuffers.get(key) || '';
+        responseBuffers.delete(key);
+        return value;
+    };
+
+    const resolveProviderFromPayload = (payload) => {
+        if (!payload || typeof payload !== 'object') {
+            return null;
+        }
+
+        if (payload.provider && VALID_PROVIDERS.includes(payload.provider)) {
+            return payload.provider;
+        }
+
+        if (payload.type === 'codex-response' || payload.type === 'codex-complete' || payload.type === 'codex-error') {
+            return 'codex';
+        }
+
+        if (payload.type === 'gemini-response' || payload.type === 'gemini-tool-use' || payload.type === 'gemini-tool-result' || payload.type === 'gemini-error') {
+            return 'gemini';
+        }
+
+        if (payload.type === 'claude-response' || payload.type === 'claude-complete' || payload.type === 'claude-error') {
+            if (payload.sessionId) {
+                const rememberedProvider = VALID_PROVIDERS.find((provider) => getSessionContext(provider, payload.sessionId));
+                if (rememberedProvider) {
+                    return rememberedProvider;
+                }
+            }
+            return pendingCommandContext?.provider || 'claude';
+        }
+
+        if (payload.type === 'session-created') {
+            return payload.provider || pendingCommandContext?.provider || null;
+        }
+
+        return null;
+    };
+
+    const extractAssistantTextChunk = (provider, payload) => {
+        if (provider === 'claude' && payload.type === 'claude-response') {
+            if (payload.data?.type === 'content_block_delta' && typeof payload.data?.delta?.text === 'string') {
+                return payload.data.delta.text;
+            }
+            return '';
+        }
+
+        if (provider === 'codex' && payload.type === 'codex-response') {
+            if (
+                payload.data?.type === 'item' &&
+                payload.data?.itemType === 'agent_message' &&
+                typeof payload.data?.message?.content === 'string'
+            ) {
+                return `${payload.data.message.content}\n`;
+            }
+            return '';
+        }
+
+        if (provider === 'gemini' && payload.type === 'gemini-response') {
+            if (payload.data?.type === 'message' && typeof payload.data?.content === 'string' && payload.data.content) {
+                return payload.data.content;
+            }
+            return '';
+        }
+
+        return '';
+    };
+
+    const resolvePantheonTargetFromState = (state, handoffEvent) => {
+        const context = handoffEvent.context && typeof handoffEvent.context === 'object' ? handoffEvent.context : {};
+        const requestedProvider = typeof context.targetProvider === 'string' ? context.targetProvider : handoffEvent.to;
+        const requestedSessionId = typeof context.targetSessionId === 'string' ? context.targetSessionId : null;
+
+        if (requestedProvider === 'human' || requestedProvider === 'all') {
+            return { provider: requestedProvider, sessionId: requestedSessionId, workspacePath: null };
+        }
+
+        if (requestedProvider && requestedSessionId) {
+            return { provider: requestedProvider, sessionId: requestedSessionId, workspacePath: null };
+        }
+
+        const registeredSessions = Array.isArray(state?.registeredSessions) ? state.registeredSessions : [];
+        const matchingSessions = registeredSessions.filter((entry) =>
+            entry.provider === requestedProvider && entry.sessionId
+        );
+        const preferred = matchingSessions[matchingSessions.length - 1];
+
+        return preferred ? {
+            provider: preferred.provider,
+            sessionId: preferred.sessionId,
+            workspacePath: preferred.workspacePath || null
+        } : null;
+    };
+
+    const resolveDeliveryWorkspacePath = async (targetInfo, fallbackWorkspacePath) => {
+        if (!targetInfo?.provider || !targetInfo?.sessionId) {
+            return fallbackWorkspacePath;
+        }
+
+        return await resolveProviderSessionWorkspacePath(
+            targetInfo.provider,
+            targetInfo.sessionId,
+            targetInfo.workspacePath || fallbackWorkspacePath
+        );
+    };
+
+    const injectPromptIntoProviderSession = (workspacePath, provider, sessionId, prompt) => {
+        if (!sessionId) {
+            return { delivered: false, reason: 'No target session found' };
+        }
+
+        const ptySessionKey = `${workspacePath}_${sessionId}`;
+        const targetSession = ptySessionsMap.get(ptySessionKey);
+        if (!targetSession?.pty?.write) {
+            return { delivered: false, reason: 'Target provider session is not currently attached to a shell PTY' };
+        }
+
+        targetSession.pty.write(`${prompt}\n`);
+        return { delivered: true, sessionId, provider };
+    };
+
+    const createPantheonBackgroundWriter = (provider, workspacePath) => {
+        let currentSessionId = null;
+
+        return {
+            isWebSocketWriter: true,
+            send: (payload) => {
+                const enrichedPayload = {
+                    ...payload,
+                    provider: payload?.provider || provider,
+                    sessionId: payload?.sessionId || currentSessionId || null
+                };
+
+                Promise.resolve(handleOutgoingProviderMessage(enrichedPayload)).catch((error) => {
+                    console.error('[Pantheon] Background handoff writer error:', error);
+                });
+            },
+            setSessionId: (sessionId) => {
+                currentSessionId = sessionId;
+                rememberSessionContext(provider, sessionId, workspacePath);
+            },
+            getSessionId: () => currentSessionId
+        };
+    };
+
+    const dispatchPantheonChatHandoff = async (workspacePath, targetInfo, prompt) => {
+        if (!targetInfo?.provider || !targetInfo?.sessionId || targetInfo.provider === 'human' || targetInfo.provider === 'all') {
+            return { delivered: false, reason: 'No target chat session found' };
+        }
+
+        const writer = createPantheonBackgroundWriter(targetInfo.provider, workspacePath);
+
+        try {
+            if (targetInfo.provider === 'codex') {
+                await queryCodex(prompt, {
+                    cwd: workspacePath,
+                    projectPath: workspacePath,
+                    sessionId: targetInfo.sessionId,
+                    resume: true
+                }, writer);
+                return { delivered: true, channel: 'chat' };
+            }
+
+            if (targetInfo.provider === 'gemini') {
+                const resumeSessionId = await resolveGeminiResumeSessionId(workspacePath, targetInfo.sessionId);
+                await spawnGemini(prompt, {
+                    cwd: workspacePath,
+                    projectPath: workspacePath,
+                    sessionId: targetInfo.sessionId,
+                    resumeSessionId,
+                    resume: true
+                }, writer);
+                return { delivered: true, channel: 'chat' };
+            }
+
+            if (targetInfo.provider === 'claude') {
+                await queryClaudeSDK(prompt, {
+                    cwd: workspacePath,
+                    projectPath: workspacePath,
+                    sessionId: targetInfo.sessionId,
+                    resume: true
+                }, writer);
+                return { delivered: true, channel: 'chat' };
+            }
+        } catch (error) {
+            console.error('[Pantheon] Chat handoff dispatch failed:', error);
+            return {
+                delivered: false,
+                reason: error instanceof Error ? error.message : 'Chat handoff dispatch failed'
+            };
+        }
+
+        return { delivered: false, reason: 'Unsupported provider for chat handoff' };
+    };
+
+    const deliverPantheonHandoff = async (workspacePath, handoffEvent, prompt, targetInfo) => {
+        const chatResult = await dispatchPantheonChatHandoff(workspacePath, targetInfo, prompt);
+
+        if (chatResult.delivered) {
+            await broadcastPantheonEvent(workspacePath, {
+                type: 'handoff_delivery',
+                provider: targetInfo.provider,
+                sessionId: targetInfo.sessionId,
+                from: handoffEvent.from,
+                to: handoffEvent.to,
+                message: `Dispatched handoff to ${targetInfo.provider} session ${targetInfo.sessionId} via chat`,
+                artifacts: handoffEvent.artifacts,
+                status: 'delivered'
+            });
+            return;
+        }
+
+        const injectionResult = injectPromptIntoProviderSession(
+            workspacePath,
+            targetInfo.provider,
+            targetInfo.sessionId,
+            prompt
+        );
+
+        if (injectionResult.delivered) {
+            await broadcastPantheonEvent(workspacePath, {
+                type: 'handoff_delivery',
+                provider: targetInfo.provider,
+                sessionId: targetInfo.sessionId,
+                from: handoffEvent.from,
+                to: handoffEvent.to,
+                message: `Delivered handoff to ${targetInfo.provider} session ${targetInfo.sessionId} via shell`,
+                artifacts: handoffEvent.artifacts,
+                status: 'delivered'
+            });
+            return;
+        }
+
+        await broadcastPantheonEvent(workspacePath, {
+            type: 'manual_attention_required',
+            provider: targetInfo.provider,
+            sessionId: targetInfo.sessionId,
+            from: handoffEvent.from,
+            to: handoffEvent.to,
+            message: chatResult.reason || injectionResult.reason,
+            artifacts: handoffEvent.artifacts,
+            status: 'attention'
+        });
+    };
+
+    const resolvePantheonTarget = async (workspacePath, handoffEvent) => {
+        const context = handoffEvent.context && typeof handoffEvent.context === 'object' ? handoffEvent.context : {};
+        const requestedProvider = typeof context.targetProvider === 'string' ? context.targetProvider : handoffEvent.to;
+        const requestedSessionId = typeof context.targetSessionId === 'string' ? context.targetSessionId : null;
+
+        if (requestedProvider === 'human' || requestedProvider === 'all') {
+            return { provider: requestedProvider, sessionId: requestedSessionId, workspacePath: null };
+        }
+
+        if (requestedProvider && requestedSessionId) {
+            return { provider: requestedProvider, sessionId: requestedSessionId, workspacePath: null };
+        }
+
+        const project = await findProjectByWorkspacePath(workspacePath);
+        return {
+            provider: requestedProvider,
+            sessionId: getLatestSessionId(project, requestedProvider),
+            workspacePath: project?.path || project?.fullPath || workspacePath
+        };
+    };
+
+    const dispatchPantheonHandoffResult = async (result) => {
+        broadcastPantheonPayload({
+            type: 'pantheon:event',
+            workspacePath: result.event.workspacePath,
+            event: result.event,
+            state: enrichPantheonState(result.state),
+            prompt: result.prompt
+        });
+
+        if (result.event.to === 'all') {
+            const registeredSessions = result.state?.registeredSessions || [];
+            const deliverableSessions = registeredSessions.filter((entry) =>
+                entry.provider && entry.sessionId && entry.provider !== 'human'
+            );
+
+            if (deliverableSessions.length === 0) {
+                await broadcastPantheonEvent(result.event.workspacePath, {
+                    type: 'manual_attention_required',
+                    provider: 'all',
+                    sessionId: null,
+                    from: result.event.from,
+                    to: result.event.to,
+                    message: 'No registered sessions are available to receive this @all handoff',
+                    artifacts: result.event.artifacts,
+                    status: 'attention'
+                });
+            }
+
+            for (const entry of deliverableSessions) {
+                const deliveryWorkspacePath = await resolveDeliveryWorkspacePath(entry, result.event.workspacePath);
+                await deliverPantheonHandoff(deliveryWorkspacePath, result.event, result.prompt, {
+                    provider: entry.provider,
+                    sessionId: entry.sessionId,
+                    workspacePath: deliveryWorkspacePath
+                });
+            }
+            return;
+        }
+
+        if (!result.event.to || result.event.to === 'human') {
+            return;
+        }
+
+        const targetInfo =
+            resolvePantheonTargetFromState(result.state, result.event) ||
+            await resolvePantheonTarget(result.event.workspacePath, result.event);
+
+        const deliveryWorkspacePath = await resolveDeliveryWorkspacePath(targetInfo, result.event.workspacePath);
+        await deliverPantheonHandoff(deliveryWorkspacePath, result.event, result.prompt, {
+            ...targetInfo,
+            workspacePath: deliveryWorkspacePath
+        });
+    };
+
+    const maybeTriggerAutomaticPantheonHandoff = async (provider, sessionId) => {
+        if (!provider || !sessionId) {
+            return;
+        }
+
+        const responseText = consumeResponseBuffer(provider, sessionId);
+        const parsedHandoff = parsePantheonHandoff(responseText);
+        if (!parsedHandoff) {
+            return;
+        }
+
+        const rememberedContext = getSessionContext(provider, sessionId);
+        const workspacePath = rememberedContext?.workspacePath || await findWorkspacePathForProviderSession(provider, sessionId);
+        if (!workspacePath) {
+            return;
+        }
+
+        const result = await createPantheonHandoff(workspacePath, {
+            provider,
+            sessionId,
+            from: provider,
+            to: parsedHandoff.to,
+            targetProvider: parsedHandoff.to,
+            message: parsedHandoff.message,
+            artifacts: parsedHandoff.artifacts,
+            status: 'queued'
+        });
+
+        await dispatchPantheonHandoffResult(result);
+    };
+
+    const handleOutgoingProviderMessage = async (payload) => {
+        const provider = resolveProviderFromPayload(payload);
+        const sessionId = payload?.sessionId || null;
+
+        if (payload?.type === 'session-created' && provider && sessionId && pendingCommandContext?.workspacePath) {
+            rememberSessionContext(provider, sessionId, pendingCommandContext.workspacePath);
+        }
+
+        if (provider && sessionId) {
+            const chunk = extractAssistantTextChunk(provider, payload);
+            if (chunk) {
+                appendResponseBuffer(provider, sessionId, chunk);
+            }
+        }
+
+        if (payload?.type === 'codex-complete' && payload?.actualSessionId && pendingCommandContext?.workspacePath) {
+            rememberSessionContext('codex', payload.actualSessionId, pendingCommandContext.workspacePath);
+        }
+
+        if ((payload?.type === 'claude-complete' || payload?.type === 'codex-complete') && provider && sessionId) {
+            await maybeTriggerAutomaticPantheonHandoff(provider, sessionId);
+            if (pendingCommandContext?.provider === provider) {
+                pendingCommandContext = null;
+            }
+        }
+    };
+
+    const originalWriterSend = writer.send.bind(writer);
+    writer.send = (payload) => {
+        Promise.resolve(handleOutgoingProviderMessage(payload)).catch((error) => {
+            console.error('[Pantheon] Failed to process outgoing provider message:', error);
+        });
+        return originalWriterSend(payload);
+    };
 
     ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
-            const getProviderSessions = (project, provider) => {
-                if (!project) {
-                    return [];
-                }
-
-                if (provider === 'codex') {
-                    return project.codexSessions || [];
-                }
-
-                if (provider === 'gemini') {
-                    return project.geminiSessions || [];
-                }
-
-                if (provider === 'cursor') {
-                    return project.cursorSessions || [];
-                }
-
-                return project.sessions || [];
-            };
-
-            const getLatestSessionId = (project, provider) => {
-                const sessions = [...getProviderSessions(project, provider)];
-                sessions.sort((left, right) => {
-                    const leftTime = new Date(left.updated_at || left.lastActivity || left.createdAt || left.created_at || 0).getTime();
-                    const rightTime = new Date(right.updated_at || right.lastActivity || right.createdAt || right.created_at || 0).getTime();
-                    return rightTime - leftTime;
-                });
-
-                return sessions[0]?.id || null;
-            };
-
-            const injectPromptIntoProviderSession = (workspacePath, provider, sessionId, prompt) => {
-                if (!sessionId) {
-                    return { delivered: false, reason: 'No target session found' };
-                }
-
-                const ptySessionKey = `${workspacePath}_${sessionId}`;
-                const targetSession = ptySessionsMap.get(ptySessionKey);
-                if (!targetSession?.pty?.write) {
-                    return { delivered: false, reason: 'Target provider session is not currently attached to a shell PTY' };
-                }
-
-                targetSession.pty.write(`${prompt}\n`);
-                return { delivered: true, sessionId, provider };
-            };
-
-            const deliverPantheonHandoff = async (workspacePath, handoffEvent, prompt, targetInfo) => {
-                const injectionResult = injectPromptIntoProviderSession(
-                    workspacePath,
-                    targetInfo.provider,
-                    targetInfo.sessionId,
-                    prompt
-                );
-
-                if (injectionResult.delivered) {
-                    await broadcastPantheonEvent(workspacePath, {
-                        type: 'handoff_delivery',
-                        provider: targetInfo.provider,
-                        sessionId: targetInfo.sessionId,
-                        from: handoffEvent.from,
-                        to: handoffEvent.to,
-                        message: `Delivered handoff to ${targetInfo.provider} session ${targetInfo.sessionId}`,
-                        artifacts: handoffEvent.artifacts,
-                        status: 'delivered'
-                    });
-                    return;
-                }
-
-                await broadcastPantheonEvent(workspacePath, {
-                    type: 'manual_attention_required',
-                    provider: targetInfo.provider,
-                    sessionId: targetInfo.sessionId,
-                    from: handoffEvent.from,
-                    to: handoffEvent.to,
-                    message: injectionResult.reason,
-                    artifacts: handoffEvent.artifacts,
-                    status: 'attention'
-                });
-            };
-
-            const resolvePantheonTarget = async (workspacePath, handoffEvent) => {
-                const context = handoffEvent.context && typeof handoffEvent.context === 'object' ? handoffEvent.context : {};
-                const requestedProvider = typeof context.targetProvider === 'string' ? context.targetProvider : handoffEvent.to;
-                const requestedSessionId = typeof context.targetSessionId === 'string' ? context.targetSessionId : null;
-
-                if (requestedProvider === 'human' || requestedProvider === 'all') {
-                    return { provider: requestedProvider, sessionId: requestedSessionId };
-                }
-
-                if (requestedProvider && requestedSessionId) {
-                    return { provider: requestedProvider, sessionId: requestedSessionId };
-                }
-
-                const project = await findProjectByWorkspacePath(workspacePath);
-                return {
-                    provider: requestedProvider,
-                    sessionId: getLatestSessionId(project, requestedProvider)
-                };
-            };
 
             if (data.type === 'claude-command') {
                 console.log('[DEBUG] User message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
+                pendingCommandContext = {
+                    provider: 'claude',
+                    workspacePath: data.options?.projectPath || data.options?.cwd || null
+                };
+                if (data.options?.sessionId && pendingCommandContext.workspacePath) {
+                    rememberSessionContext('claude', data.options.sessionId, pendingCommandContext.workspacePath);
+                }
 
                 // Use Claude Agents SDK
                 await queryClaudeSDK(data.command, data.options, writer);
@@ -1691,18 +2082,39 @@ function handleChatConnection(ws) {
                 console.log('📁 Project:', data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
+                pendingCommandContext = {
+                    provider: 'cursor',
+                    workspacePath: data.options?.cwd || data.options?.projectPath || null
+                };
+                if (data.options?.sessionId && pendingCommandContext.workspacePath) {
+                    rememberSessionContext('cursor', data.options.sessionId, pendingCommandContext.workspacePath);
+                }
                 await spawnCursor(data.command, data.options, writer);
             } else if (data.type === 'codex-command') {
                 console.log('[DEBUG] Codex message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
+                pendingCommandContext = {
+                    provider: 'codex',
+                    workspacePath: data.options?.projectPath || data.options?.cwd || null
+                };
+                if (data.options?.sessionId && pendingCommandContext.workspacePath) {
+                    rememberSessionContext('codex', data.options.sessionId, pendingCommandContext.workspacePath);
+                }
                 await queryCodex(data.command, data.options, writer);
             } else if (data.type === 'gemini-command') {
                 console.log('[DEBUG] Gemini message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
+                pendingCommandContext = {
+                    provider: 'gemini',
+                    workspacePath: data.options?.projectPath || data.options?.cwd || null
+                };
+                if (data.options?.sessionId && pendingCommandContext.workspacePath) {
+                    rememberSessionContext('gemini', data.options.sessionId, pendingCommandContext.workspacePath);
+                }
                 await spawnGemini(data.command, data.options, writer);
             } else if (data.type === 'cursor-resume') {
                 // Backward compatibility: treat as cursor-command with resume and no prompt
@@ -1814,7 +2226,7 @@ function handleChatConnection(ws) {
                     workspacePath: payload.workspacePath,
                     inboxPath: payload.inboxPath,
                     whiteboardPath: payload.whiteboardPath,
-                    state: payload.state,
+                    state: enrichPantheonState(payload.state),
                     events: payload.events
                 });
             } else if (data.type === 'pantheon:list-events') {
@@ -1838,76 +2250,48 @@ function handleChatConnection(ws) {
                     artifacts: data.artifacts || [],
                     status: data.status || 'queued'
                 });
-
-                broadcastPantheonPayload({
-                    type: 'pantheon:event',
-                    workspacePath: result.event.workspacePath,
-                    event: result.event,
-                    state: result.state,
-                    prompt: result.prompt
-                });
-
-                if (result.event.to === 'all') {
-                    const registeredSessions = result.state?.registeredSessions || [];
-                    const deliverableSessions = registeredSessions.filter((entry) =>
-                        entry.provider && entry.sessionId && entry.provider !== 'human'
-                    );
-
-                    if (deliverableSessions.length === 0) {
-                        await broadcastPantheonEvent(result.event.workspacePath, {
-                            type: 'manual_attention_required',
-                            provider: 'all',
-                            sessionId: null,
-                            from: result.event.from,
-                            to: result.event.to,
-                            message: 'No registered sessions are available to receive this @all handoff',
-                            artifacts: result.event.artifacts,
-                            status: 'attention'
-                        });
-                    }
-                    for (const entry of deliverableSessions) {
-                        await deliverPantheonHandoff(result.event.workspacePath, result.event, result.prompt, {
-                            provider: entry.provider,
-                            sessionId: entry.sessionId
-                        });
-                    }
-                } else if (result.event.to && result.event.to !== 'human') {
-                    const targetInfo = await resolvePantheonTarget(result.event.workspacePath, result.event);
-                    await deliverPantheonHandoff(result.event.workspacePath, result.event, result.prompt, targetInfo);
-                }
+                await dispatchPantheonHandoffResult(result);
             } else if (data.type === 'pantheon:register-session') {
-                const workspacePath = data.workspacePath || data.projectPath;
+                const provider = data.provider || null;
+                const sessionId = data.sessionId || null;
+                const requestedWorkspacePath = data.workspacePath || data.projectPath;
+                const workspacePath = await resolveProviderSessionWorkspacePath(provider, sessionId, requestedWorkspacePath);
                 const result = await registerPantheonSession(workspacePath, {
-                    provider: data.provider || null,
-                    sessionId: data.sessionId || null,
+                    provider,
+                    sessionId,
                     from: data.from || 'human',
                     message: data.message || 'Registered Pantheon session',
                     summary: data.summary || null,
-                    projectName: data.projectName || null
+                    projectName: data.projectName || null,
+                    workspacePath
                 });
 
                 broadcastPantheonPayload({
                     type: 'pantheon:event',
                     workspacePath: result.event.workspacePath,
                     event: result.event,
-                    state: result.state
+                    state: enrichPantheonState(result.state)
                 });
             } else if (data.type === 'pantheon:unregister-session') {
-                const workspacePath = data.workspacePath || data.projectPath;
+                const provider = data.provider || null;
+                const sessionId = data.sessionId || null;
+                const requestedWorkspacePath = data.workspacePath || data.projectPath;
+                const workspacePath = await resolveProviderSessionWorkspacePath(provider, sessionId, requestedWorkspacePath);
                 const result = await unregisterPantheonSession(workspacePath, {
-                    provider: data.provider || null,
-                    sessionId: data.sessionId || null,
+                    provider,
+                    sessionId,
                     from: data.from || 'human',
                     message: data.message || 'Unregistered Pantheon session',
                     summary: data.summary || null,
-                    projectName: data.projectName || null
+                    projectName: data.projectName || null,
+                    workspacePath
                 });
 
                 broadcastPantheonPayload({
                     type: 'pantheon:event',
                     workspacePath: result.event.workspacePath,
                     event: result.event,
-                    state: result.state
+                    state: enrichPantheonState(result.state)
                 });
             } else if (data.type === 'pantheon:resolve-approval') {
                 if (!data.requestId) {

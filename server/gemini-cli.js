@@ -13,7 +13,7 @@ import GeminiResponseHandler from './gemini-response-handler.js';
 let activeGeminiProcesses = new Map(); // Track active processes by session ID
 
 async function spawnGemini(command, options = {}, ws) {
-    const { sessionId, projectPath, cwd, resume, toolsSettings, permissionMode, images } = options;
+    const { sessionId, projectPath, cwd, resume, toolsSettings, permissionMode, images, resumeSessionId } = options;
     let capturedSessionId = sessionId; // Track session ID throughout the process
     let sessionCreatedSent = false; // Track if we've already sent session-created event
     let assistantBlocks = []; // Accumulate the full response blocks including tools
@@ -34,10 +34,14 @@ async function spawnGemini(command, options = {}, ws) {
     }
 
     // If we have a sessionId, we want to resume
-    if (sessionId) {
+    if (resumeSessionId) {
+        args.push('--resume', resumeSessionId);
+    } else if (sessionId) {
         const session = sessionManager.getSession(sessionId);
         if (session && session.cliSessionId) {
             args.push('--resume', session.cliSessionId);
+        } else {
+            args.push('--resume', sessionId);
         }
     }
 

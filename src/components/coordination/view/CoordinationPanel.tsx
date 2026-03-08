@@ -27,6 +27,8 @@ type PantheonState = {
         title?: string | null;
         registeredAt?: string | null;
         projectName?: string | null;
+        workspacePath?: string | null;
+        attached?: boolean;
     }>;
     pendingApprovals?: Array<{
         requestId: string;
@@ -57,6 +59,19 @@ function getWorkspacePath(project: Project) {
     return project.path || project.fullPath;
 }
 
+function getSessionWorkspacePath(session: ProjectSession | null, project: Project) {
+    if (!session) {
+        return getWorkspacePath(project);
+    }
+
+    const sessionWithPaths = session as ProjectSession & {
+        cwd?: string | null;
+        projectPath?: string | null;
+    };
+
+    return sessionWithPaths.cwd || sessionWithPaths.projectPath || getWorkspacePath(project);
+}
+
 function formatTimestamp(value?: string) {
     if (!value) {
         return '';
@@ -70,8 +85,30 @@ function formatTimestamp(value?: string) {
     return date.toLocaleString();
 }
 
-function detectProvider(session: ProjectSession | null): string {
-    return session?.__provider || 'claude';
+function detectProvider(project: Project, session: ProjectSession | null): string {
+    if (!session?.id) {
+        return 'claude';
+    }
+
+    const sessionId = session.id;
+
+    if ((project.sessions || []).some((entry) => entry.id === sessionId)) {
+        return 'claude';
+    }
+
+    if ((project.codexSessions || []).some((entry) => entry.id === sessionId)) {
+        return 'codex';
+    }
+
+    if ((project.geminiSessions || []).some((entry) => entry.id === sessionId)) {
+        return 'gemini';
+    }
+
+    if ((project.cursorSessions || []).some((entry) => entry.id === sessionId)) {
+        return 'cursor';
+    }
+
+    return ((session as ProjectSession & { __provider?: string | null }).__provider) || 'claude';
 }
 
 function formatSessionLabel(session: PantheonState['registeredSessions'][number]) {
@@ -88,6 +125,7 @@ export default function CoordinationPanel({
     isConnected
 }: CoordinationPanelProps) {
     const workspacePath = getWorkspacePath(selectedProject);
+    const sessionWorkspacePath = getSessionWorkspacePath(selectedSession, selectedProject);
     const [events, setEvents] = useState<PantheonEvent[]>([]);
     const [state, setState] = useState<PantheonState | null>(null);
     const [target, setTarget] = useState('claude');
@@ -133,7 +171,7 @@ export default function CoordinationPanel({
 
     const recentEvents = useMemo(() => events.slice(-20).reverse(), [events]);
     const registeredSessions = state?.registeredSessions || [];
-    const currentProvider = detectProvider(selectedSession);
+    const currentProvider = detectProvider(selectedProject, selectedSession);
     const currentSessionTitle = selectedSession?.summary || selectedSession?.title || selectedSession?.name || 'Current session';
     const currentEntryId = selectedSession?.id ? `${currentProvider}:${selectedSession.id}` : null;
     const isCurrentSessionRegistered = Boolean(currentEntryId && registeredSessions.some((entry) => entry.entryId === currentEntryId));
@@ -171,7 +209,7 @@ export default function CoordinationPanel({
 
         sendMessage({
             type: 'pantheon:register-session',
-            workspacePath,
+            workspacePath: sessionWorkspacePath,
             provider: currentProvider,
             sessionId: selectedSession.id,
             summary: currentSessionTitle,
@@ -192,9 +230,12 @@ export default function CoordinationPanel({
             return;
         }
 
+        const entry = registeredSessions.find((item) => item.entryId === entryId);
+        const unregisterWorkspacePath = entry?.workspacePath || sessionWorkspacePath;
+
         sendMessage({
             type: 'pantheon:unregister-session',
-            workspacePath,
+            workspacePath: unregisterWorkspacePath,
             provider,
             sessionId,
             from: 'human',
@@ -217,7 +258,7 @@ export default function CoordinationPanel({
             type: 'pantheon:create-handoff',
             workspacePath,
             sessionId: selectedSession?.id || null,
-            provider: detectProvider(selectedSession),
+            provider: detectProvider(selectedProject, selectedSession),
             from: 'human',
             to: targetProvider,
             targetProvider,
@@ -354,10 +395,13 @@ export default function CoordinationPanel({
                                 {registeredSessions.length > 0 ? (
                                     registeredSessions.map((entry) => (
                                         <div key={entry.entryId} className="rounded-md border border-border/70 bg-background/60 px-3 py-3">
-                                            <div className="text-sm font-medium text-foreground">
-                                                {entry.provider || 'unknown'} · {entry.title || entry.sessionId || 'session'}
-                                            </div>
-                                            <div className="mt-1 text-xs text-muted-foreground">{entry.sessionId}</div>
+                                        <div className="text-sm font-medium text-foreground">
+                                            {entry.provider || 'unknown'} · {entry.title || entry.sessionId || 'session'}
+                                        </div>
+                                        <div className="mt-1 text-xs text-muted-foreground">{entry.sessionId}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">
+                                            Status: {entry.attached ? 'attached' : 'not attached'}
+                                        </div>
                                             <div className="mt-3 flex items-center gap-2">
                                                 <button
                                                     type="button"
