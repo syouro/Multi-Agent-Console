@@ -1785,11 +1785,23 @@ function handleChatConnection(ws) {
 
                 if (result.event.to === 'all') {
                     const registeredSessions = result.state?.registeredSessions || [];
-                    for (const entry of registeredSessions) {
-                        if (!entry.provider || !entry.sessionId || entry.provider === 'human') {
-                            continue;
-                        }
+                    const deliverableSessions = registeredSessions.filter((entry) =>
+                        entry.provider && entry.sessionId && entry.provider !== 'human'
+                    );
 
+                    if (deliverableSessions.length === 0) {
+                        await broadcastPantheonEvent(result.event.workspacePath, {
+                            type: 'manual_attention_required',
+                            provider: 'all',
+                            sessionId: null,
+                            from: result.event.from,
+                            to: result.event.to,
+                            message: 'No registered sessions are available to receive this @all handoff',
+                            artifacts: result.event.artifacts,
+                            status: 'attention'
+                        });
+                    }
+                    for (const entry of deliverableSessions) {
                         await deliverPantheonHandoff(result.event.workspacePath, result.event, result.prompt, {
                             provider: entry.provider,
                             sessionId: entry.sessionId

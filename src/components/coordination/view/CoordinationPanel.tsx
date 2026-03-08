@@ -181,7 +181,13 @@ export default function CoordinationPanel({
     };
 
     const handleUnregisterSession = (entryId: string) => {
-        const [provider, sessionId] = entryId.split(':');
+        const separatorIndex = entryId.indexOf(':');
+        if (separatorIndex <= 0 || separatorIndex === entryId.length - 1) {
+            return;
+        }
+
+        const provider = entryId.slice(0, separatorIndex);
+        const sessionId = entryId.slice(separatorIndex + 1);
         if (!provider || !sessionId) {
             return;
         }
