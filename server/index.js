@@ -44,7 +44,7 @@ import pty from 'node-pty';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 
-import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
+import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations, getGeminiCliSessions } from './projects.js';
 import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter, subscribeToClaudeApprovalEvents } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions } from './openai-codex.js';
@@ -123,6 +123,70 @@ async function findProjectByWorkspacePath(workspacePath) {
         const projectPath = project.path || project.fullPath;
         return projectPath === workspacePath;
     }) || null;
+}
+
+async function findWorkspacePathForProviderSession(provider, sessionId) {
+    if (!provider || !sessionId) {
+        return null;
+    }
+
+    const projects = await getProjects();
+    for (const project of projects) {
+        if (provider === 'claude') {
+            const session = (project.sessions || []).find((item) => item.id === sessionId);
+            if (session) {
+                return session.cwd || session.projectPath || project.path || project.fullPath || null;
+            }
+        }
+
+        if (provider === 'codex') {
+            const session = (project.codexSessions || []).find((item) => item.id === sessionId);
+            if (session) {
+                return session.cwd || session.projectPath || project.path || project.fullPath || null;
+            }
+        }
+
+        if (provider === 'gemini') {
+            const session = (project.geminiSessions || []).find((item) => item.id === sessionId);
+            if (session) {
+                return session.projectPath || session.cwd || project.path || project.fullPath || null;
+            }
+        }
+
+        if (provider === 'cursor') {
+            const session = (project.cursorSessions || []).find((item) => item.id === sessionId);
+            if (session) {
+                return session.projectPath || session.cwd || project.path || project.fullPath || null;
+            }
+        }
+    }
+
+    return null;
+}
+
+async function resolveGeminiResumeSessionId(projectPath, sessionId) {
+    if (!sessionId) {
+        return null;
+    }
+
+    try {
+        const cliSessions = await getGeminiCliSessions(projectPath);
+        const cliSessionIds = new Set(cliSessions.map((session) => session.id).filter(Boolean));
+
+        if (cliSessionIds.has(sessionId)) {
+            return sessionId;
+        }
+
+        const managedSession = sessionManager.getSession(sessionId);
+        const mappedSessionId = managedSession?.cliSessionId;
+        if (mappedSessionId && cliSessionIds.has(mappedSessionId)) {
+            return mappedSessionId;
+        }
+    } catch (error) {
+        console.error('Failed to resolve Gemini resume session ID:', error);
+    }
+
+    return sessionId;
 }
 
 async function findWorkspacePathForClaudeSession(sessionId) {
@@ -1893,7 +1957,7 @@ function handleShellConnection(ws) {
             console.log('📨 Shell message received:', data.type);
 
             if (data.type === 'init') {
-                const projectPath = data.projectPath || process.cwd();
+                let projectPath = data.projectPath || process.cwd();
                 const sessionId = data.sessionId;
                 const hasSession = data.hasSession;
                 const provider = data.provider || 'claude';
@@ -1901,6 +1965,13 @@ function handleShellConnection(ws) {
                 const isPlainShell = data.isPlainShell || (!!initialCommand && !hasSession) || provider === 'plain-shell';
                 urlDetectionBuffer = '';
                 announcedAuthUrls.clear();
+
+                if (!isPlainShell && hasSession && sessionId) {
+                    const resolvedProjectPath = await findWorkspacePathForProviderSession(provider, sessionId);
+                    if (resolvedProjectPath) {
+                        projectPath = resolvedProjectPath;
+                    }
+                }
 
                 // Login commands (Claude/Cursor auth) should never reuse cached sessions
                 const isLoginCommand = initialCommand && (
@@ -2024,17 +2095,7 @@ function handleShellConnection(ws) {
                         const command = initialCommand || 'gemini';
                         let resumeId = sessionId;
                         if (hasSession && sessionId) {
-                            try {
-                                // Gemini CLI enforces its own native session IDs, unlike other agents that accept arbitrary string names.
-                                // The UI only knows about its internal generated `sessionId` (e.g. gemini_1234).
-                                // We must fetch the mapping from the backend session manager to pass the native `cliSessionId` to the shell.
-                                const sess = sessionManager.getSession(sessionId);
-                                if (sess && sess.cliSessionId) {
-                                    resumeId = sess.cliSessionId;
-                                }
-                            } catch (err) {
-                                console.error('Failed to get Gemini CLI session ID:', err);
-                            }
+                            resumeId = await resolveGeminiResumeSessionId(projectPath, sessionId);
                         }
 
                         if (os.platform() === 'win32') {

@@ -2493,7 +2493,9 @@ async function getGeminiCliSessions(projectPath) {
           summary,
           messageCount: session.messages.length,
           lastActivity: session.lastUpdated || session.startTime || null,
-          provider: 'gemini'
+          provider: 'gemini',
+          projectPath: projectRoot,
+          cwd: projectRoot
         });
       } catch {
         continue;

@@ -84,7 +84,8 @@ class SessionManager {
           id: session.id,
           summary: this.getSessionSummary(session),
           messageCount: session.messages.length,
-          lastActivity: session.lastActivity
+          lastActivity: session.lastActivity,
+          projectPath: session.projectPath
         });
       }
     }

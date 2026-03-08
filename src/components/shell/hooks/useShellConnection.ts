@@ -35,6 +35,19 @@ type UseShellConnectionResult = {
   disconnectFromShell: () => void;
 };
 
+function resolveShellProjectPath(project: Project | null | undefined, session: ProjectSession | null | undefined) {
+  const sessionPath =
+    (typeof session?.projectPath === 'string' && session.projectPath) ||
+    (typeof session?.cwd === 'string' && session.cwd) ||
+    (typeof session?.path === 'string' && session.path);
+
+  if (sessionPath) {
+    return sessionPath;
+  }
+
+  return project?.fullPath || project?.path || '';
+}
+
 export function useShellConnection({
   wsRef,
   terminalRef,
@@ -144,7 +157,7 @@ export function useShellConnection({
 
             sendSocketMessage(socket, {
               type: 'init',
-              projectPath: currentProject.fullPath || currentProject.path || '',
+              projectPath: resolveShellProjectPath(currentProject, selectedSessionRef.current),
               sessionId: isPlainShellRef.current ? null : selectedSessionRef.current?.id || null,
               hasSession: isPlainShellRef.current ? false : Boolean(selectedSessionRef.current),
               provider: isPlainShellRef.current ? 'plain-shell' : (selectedSessionRef.current?.__provider || localStorage.getItem('selected-provider') || 'claude'),
