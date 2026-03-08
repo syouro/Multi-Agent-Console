@@ -1,7 +1,7 @@
 {
-  "name": "@siteboon/claude-code-ui",
+  "name": "multi-agent-console",
   "version": "1.23.2",
-  "description": "A web-based UI for Claude Code CLI",
+  "description": "A browser UI for coordinating Claude Code, Codex, Gemini CLI, and other local agent CLIs",
   "type": "module",
   "main": "server/index.js",
   "bin": {
@@ -15,13 +15,13 @@
     "scripts/",
     "README.md"
   ],
-  "homepage": "https://cloudcli.ai",
+  "homepage": "https://github.com/syouro/Multi-Agent-Console",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/siteboon/claudecodeui.git"
+    "url": "git+https://github.com/syouro/Multi-Agent-Console.git"
   },
   "bugs": {
-    "url": "https://github.com/siteboon/claudecodeui/issues"
+    "url": "https://github.com/syouro/Multi-Agent-Console/issues"
   },
   "scripts": {
     "dev": "concurrently --kill-others \"npm run server\" \"npm run client\"",
@@ -40,13 +40,17 @@
     "prepare": "husky"
   },
   "keywords": [
-    "claude code",
     "ai",
-    "anthropic",
+    "claude code",
+    "codex",
+    "gemini",
+    "multi-agent",
+    "coordination",
+    "mcp",
     "ui",
     "mobile"
   ],
-  "author": "CloudCLI UI Contributors",
+  "author": "Multi-Agent Console Contributors",
   "license": "GPL-3.0",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.59",
