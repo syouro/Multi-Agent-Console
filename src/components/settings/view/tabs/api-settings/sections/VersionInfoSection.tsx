@@ -16,7 +16,7 @@ export default function VersionInfoSection({
   releaseInfo,
 }: VersionInfoSectionProps) {
   const { t } = useTranslation('settings');
-  const releasesUrl = releaseInfo?.htmlUrl || 'https://github.com/siteboon/claudecodeui/releases';
+  const releasesUrl = releaseInfo?.htmlUrl || 'https://github.com/syouro/Multi-Agent-Console/releases';
 
   return (
     <div className="border-t border-border/50 pt-6">

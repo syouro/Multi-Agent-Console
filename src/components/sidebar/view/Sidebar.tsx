@@ -39,8 +39,8 @@ function Sidebar({
   const { t } = useTranslation(['sidebar', 'common']);
   const { isPWA } = useDeviceSettings({ trackMobile: false });
   const { updateAvailable, latestVersion, currentVersion, releaseInfo, installMode } = useVersionCheck(
-    'siteboon',
-    'claudecodeui',
+    'syouro',
+    'Multi-Agent-Console',
   );
   const { preferences, setPreference } = useUiPreferences();
   const { sidebarVisible } = preferences;

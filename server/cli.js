@@ -201,9 +201,17 @@ function isNewerVersion(v1, v2) {
 // Check for updates
 async function checkForUpdates(silent = false) {
     try {
-        const { execSync } = await import('child_process');
-        const latestVersion = execSync('npm show @siteboon/claude-code-ui version', { encoding: 'utf8' }).trim();
+        const response = await fetch('https://api.github.com/repos/syouro/Multi-Agent-Console/releases/latest');
+        if (!response.ok) {
+            throw new Error(`GitHub release check failed with status ${response.status}`);
+        }
+        const data = await response.json();
+        const latestVersion = String(data.tag_name || '').replace(/^v/, '').trim();
         const currentVersion = packageJson.version;
+
+        if (!latestVersion) {
+            throw new Error('No release tag found');
+        }
 
         if (isNewerVersion(latestVersion, currentVersion)) {
             console.log(`\n${c.warn('[UPDATE]')} New version available: ${c.bright(latestVersion)} (current: ${currentVersion})`);
@@ -235,11 +243,11 @@ async function updatePackage() {
         }
 
         console.log(`${c.info('[INFO]')} Updating from ${currentVersion} to ${latestVersion}...`);
-        execSync('npm update -g @siteboon/claude-code-ui', { stdio: 'inherit' });
+        execSync('npm install -g git+https://github.com/syouro/Multi-Agent-Console.git', { stdio: 'inherit' });
         console.log(`${c.ok('[OK]')} Update complete! Restart cloudcli to use the new version.`);
     } catch (e) {
         console.error(`${c.error('[ERROR]')} Update failed: ${e.message}`);
-        console.log(`${c.tip('[TIP]')} Try running manually: npm update -g @siteboon/claude-code-ui`);
+        console.log(`${c.tip('[TIP]')} Try running manually: npm install -g git+https://github.com/syouro/Multi-Agent-Console.git`);
     }
 }
 

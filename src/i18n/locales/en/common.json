@@ -216,7 +216,7 @@
     "viewFullRelease": "View full release",
     "updateProgress": "Update Progress:",
     "manualUpgrade": "Manual upgrade:",
-    "npmUpgradeCommand": "npm install -g @siteboon/claude-code-ui@latest",
+    "npmUpgradeCommand": "npm install -g git+https://github.com/syouro/Multi-Agent-Console.git",
     "manualUpgradeHint": "Or click \"Update Now\" to run the update automatically.",
     "updateCompleted": "Update completed successfully!",
     "restartServer": "Please restart the server to apply changes.",
