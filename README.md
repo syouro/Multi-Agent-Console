@@ -95,6 +95,10 @@ Server entrypoint:
 
 - [server/pantheon/mcp-server.js](./server/pantheon/mcp-server.js)
 
+HTTP MCP endpoint:
+
+- `POST /mcp?provider=claude|codex|gemini`
+
 ### Claude Code
 
 Register the Pantheon MCP server at user scope so it is available in all Claude Code sessions:
@@ -130,13 +134,19 @@ The MCP server forwards calls to:
 
 ### Codex CLI
 
-You can register the same MCP server in Codex CLI:
+You can register the same MCP server in Codex CLI with stdio:
 
 ```bash
 codex mcp add pantheon -- \
   node /root/codexDir/claudecodeui/server/pantheon/mcp-server.js \
   --provider codex \
   --base-url http://127.0.0.1:3001
+```
+
+Or use the HTTP endpoint directly:
+
+```bash
+codex mcp add pantheon-http --url http://127.0.0.1:3001/mcp?provider=codex
 ```
 
 If startup is slow, add this to `~/.codex/config.toml`:

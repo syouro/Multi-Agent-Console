@@ -71,6 +71,7 @@ import { appendPantheonEvent, syncPantheonWorkspace, loadPantheonEvents } from '
 import { createPantheonHandoff, parsePantheonHandoff, registerPantheonSession, unregisterPantheonSession } from './pantheon/bus.js';
 import { normalizeClaudeApprovalDecision, normalizeClaudeApprovalRequest } from './pantheon/approvals.js';
 import { createPantheonService } from './pantheon/service.js';
+import { buildPantheonMcpHandler } from './pantheon/mcp-protocol.js';
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
 
@@ -854,36 +855,37 @@ function authenticatePantheonBridge(req, res, next) {
     return res.status(403).json({ error: 'Pantheon bridge is only available from localhost' });
 }
 
-app.post('/api/pantheon/handoff', authenticatePantheonBridge, async (req, res) => {
-    try {
-        const {
-            workspacePath,
-            to,
-            task,
-            artifacts = [],
-            note = '',
-            targetSessionId = null,
-            targetProvider = null,
-            from = 'human'
-        } = req.body || {};
+function buildPantheonRestPayload(body = {}) {
+    const {
+        workspacePath,
+        to,
+        task,
+        artifacts = [],
+        note = '',
+        targetSessionId = null,
+        targetProvider = null,
+        from = 'human'
+    } = body;
 
-        if (!workspacePath || typeof workspacePath !== 'string') {
-            return res.status(400).json({ error: 'workspacePath is required' });
-        }
+    if (!workspacePath || typeof workspacePath !== 'string') {
+        throw new Error('workspacePath is required');
+    }
 
-        if (!to || typeof to !== 'string') {
-            return res.status(400).json({ error: 'to is required' });
-        }
+    if (!to || typeof to !== 'string') {
+        throw new Error('to is required');
+    }
 
-        if (!task || typeof task !== 'string' || !task.trim()) {
-            return res.status(400).json({ error: 'task is required' });
-        }
+    if (!task || typeof task !== 'string' || !task.trim()) {
+        throw new Error('task is required');
+    }
 
-        const trimmedTask = task.trim();
-        const trimmedNote = typeof note === 'string' ? note.trim() : '';
-        const message = trimmedNote ? `${trimmedTask}\n\nNote: ${trimmedNote}` : trimmedTask;
+    const trimmedTask = task.trim();
+    const trimmedNote = typeof note === 'string' ? note.trim() : '';
+    const message = trimmedNote ? `${trimmedTask}\n\nNote: ${trimmedNote}` : trimmedTask;
 
-        const result = await pantheonRestService.createAndDispatchPantheonHandoff(workspacePath, {
+    return {
+        workspacePath,
+        handoff: {
             from,
             to,
             targetProvider: targetProvider || to,
@@ -891,27 +893,91 @@ app.post('/api/pantheon/handoff', authenticatePantheonBridge, async (req, res) =
             message,
             artifacts,
             status: 'queued'
-        });
+        },
+        targetSessionId,
+        targetProvider
+    };
+}
 
-        const primaryDelivery = result.deliveries?.[0] || null;
+async function dispatchPantheonRestHandoff(body = {}) {
+    const { workspacePath, handoff, targetSessionId, targetProvider } = buildPantheonRestPayload(body);
+    const result = await pantheonRestService.createAndDispatchPantheonHandoff(workspacePath, handoff);
+    const primaryDelivery = result.deliveries?.[0] || null;
 
-        res.json({
-            ok: true,
-            eventId: result.event.id,
-            workspacePath: result.event.workspacePath,
-            to: result.event.to,
-            from: result.event.from,
-            targetProvider: primaryDelivery?.provider || targetProvider || result.event.context?.targetProvider || null,
-            targetSessionId: primaryDelivery?.sessionId || targetSessionId || null,
-            status: primaryDelivery?.delivered ? 'delivered' : 'queued',
-            prompt: result.prompt,
-            deliveries: result.deliveries || []
-        });
+    return {
+        ok: true,
+        eventId: result.event.id,
+        workspacePath: result.event.workspacePath,
+        to: result.event.to,
+        from: result.event.from,
+        targetProvider: primaryDelivery?.provider || targetProvider || result.event.context?.targetProvider || null,
+        targetSessionId: primaryDelivery?.sessionId || targetSessionId || null,
+        status: primaryDelivery?.delivered ? 'delivered' : 'queued',
+        prompt: result.prompt,
+        deliveries: result.deliveries || []
+    };
+}
+
+function resolvePantheonMcpProvider(req) {
+    const queryProvider = typeof req.query?.provider === 'string' ? req.query.provider.trim() : '';
+    if (queryProvider) {
+        return queryProvider;
+    }
+
+    const headerProvider = typeof req.headers['x-pantheon-provider'] === 'string'
+        ? req.headers['x-pantheon-provider'].trim()
+        : '';
+
+    return headerProvider || 'human';
+}
+
+app.post('/api/pantheon/handoff', authenticatePantheonBridge, async (req, res) => {
+    try {
+        res.json(await dispatchPantheonRestHandoff(req.body || {}));
     } catch (error) {
         console.error('[Pantheon] REST handoff error:', error);
         res.status(400).json({
             ok: false,
             error: error instanceof Error ? error.message : 'Failed to create Pantheon handoff'
+        });
+    }
+});
+
+app.get('/mcp', authenticatePantheonBridge, (req, res) => {
+    res.setHeader('Allow', 'POST');
+    res.status(405).json({
+        jsonrpc: '2.0',
+        error: {
+            code: -32000,
+            message: 'Pantheon HTTP MCP only supports POST JSON-RPC requests'
+        }
+    });
+});
+
+app.post('/mcp', authenticatePantheonBridge, async (req, res) => {
+    const provider = resolvePantheonMcpProvider(req);
+    const handlePantheonMcpRequest = buildPantheonMcpHandler({
+        provider,
+        callPantheonHandoff: (args) => dispatchPantheonRestHandoff(args)
+    });
+
+    try {
+        const response = await handlePantheonMcpRequest(req.body || {});
+        if (!response) {
+            return res.status(202).end();
+        }
+
+        res.setHeader('Content-Type', 'application/json');
+        return res.status(200).json(response);
+    } catch (error) {
+        const id = req.body?.id ?? null;
+        return res.status(200).json({
+            jsonrpc: '2.0',
+            id,
+            error: {
+                code: -32000,
+                message: error instanceof Error ? error.message : 'Unhandled Pantheon MCP HTTP error'
+            }
         });
     }
 });
