@@ -95,6 +95,10 @@ npm run server
 
 - [server/pantheon/mcp-server.js](./server/pantheon/mcp-server.js)
 
+HTTP MCP 엔드포인트:
+
+- `POST /mcp?provider=claude|codex|gemini`
+
 ### Claude Code
 
 Pantheon MCP server를 user 범위로 등록하여 모든 Claude Code 세션에서 사용할 수 있게 합니다:
@@ -128,15 +132,27 @@ MCP server는 최종적으로 다음으로 전달됩니다:
 
 - `POST /api/pantheon/handoff`
 
+HTTP MCP를 지원하는 클라이언트라면 다음 주소를 직접 사용할 수도 있습니다:
+
+```text
+http://127.0.0.1:3001/mcp?provider=claude
+```
+
 ### Codex CLI
 
-Codex CLI에서는 같은 MCP server를 등록할 수 있습니다.
+Codex CLI에서는 stdio 방식으로 같은 MCP server를 등록할 수 있습니다.
 
 ```bash
 codex mcp add pantheon -- \
   node /root/codexDir/claudecodeui/server/pantheon/mcp-server.js \
   --provider codex \
   --base-url http://127.0.0.1:3001
+```
+
+또는 HTTP 엔드포인트를 직접 사용할 수 있습니다:
+
+```bash
+codex mcp add pantheon-http --url http://127.0.0.1:3001/mcp?provider=codex
 ```
 
 시작이 느리면 `~/.codex/config.toml`에 다음을 추가하세요.

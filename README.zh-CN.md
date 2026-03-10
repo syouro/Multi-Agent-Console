@@ -95,6 +95,10 @@ npm run server
 
 - [server/pantheon/mcp-server.js](./server/pantheon/mcp-server.js)
 
+HTTP MCP 端点：
+
+- `POST /mcp?provider=claude|codex|gemini`
+
 ### Claude Code
 
 在 user 作用域注册 Pantheon MCP server，使其在所有 Claude Code 会话中可用：
@@ -128,15 +132,27 @@ MCP server 会将调用转发到：
 
 - `POST /api/pantheon/handoff`
 
+如果客户端支持 HTTP MCP，也可以直接使用：
+
+```text
+http://127.0.0.1:3001/mcp?provider=claude
+```
+
 ### Codex CLI
 
-可以在 Codex CLI 中注册同一个 MCP server：
+可以在 Codex CLI 中通过 stdio 注册同一个 MCP server：
 
 ```bash
 codex mcp add pantheon -- \
   node /root/codexDir/claudecodeui/server/pantheon/mcp-server.js \
   --provider codex \
   --base-url http://127.0.0.1:3001
+```
+
+也可以直接使用 HTTP 端点：
+
+```bash
+codex mcp add pantheon-http --url http://127.0.0.1:3001/mcp?provider=codex
 ```
 
 如果启动偏慢，可以在 `~/.codex/config.toml` 中加上：
