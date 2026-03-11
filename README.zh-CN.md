@@ -91,6 +91,18 @@ npm run server
 
 - `pantheon_handoff`
 
+当前提供的可读 MCP resource：
+
+- `pantheon://server/info`
+- `pantheon://server/resource-guide`
+
+当前提供的工作区作用域 MCP resource template：
+
+- `pantheon://state?workspacePath={workspacePath}`
+- `pantheon://whiteboard?workspacePath={workspacePath}`
+- `pantheon://events?workspacePath={workspacePath}`
+- `pantheon://sessions?workspacePath={workspacePath}`
+
 服务端入口：
 
 - [server/pantheon/mcp-server.js](./server/pantheon/mcp-server.js)
@@ -178,6 +190,13 @@ startup_timeout_sec = 30
 
 - 终端 agent：优先使用 `pantheon_handoff`
 - Web UI 会话：文本型的回复末尾 handoff 解析仍作为 fallback 保留
+
+这些可读 MCP resource 只用于读取，不用于修改：
+
+- `pantheon://state`：查看结构化工作区协同状态
+- `pantheon://whiteboard`：查看渲染后的 whiteboard markdown 快照
+- `pantheon://events`：查看最近的 Pantheon 事件历史
+- `pantheon://sessions`：查看当前工作区已注册的 session
 
 ## 当前限制
 

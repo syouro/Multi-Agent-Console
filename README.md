@@ -91,6 +91,18 @@ Included MCP tool:
 
 - `pantheon_handoff`
 
+Included readable MCP resources:
+
+- `pantheon://server/info`
+- `pantheon://server/resource-guide`
+
+Included workspace-scoped MCP resource templates:
+
+- `pantheon://state?workspacePath={workspacePath}`
+- `pantheon://whiteboard?workspacePath={workspacePath}`
+- `pantheon://events?workspacePath={workspacePath}`
+- `pantheon://sessions?workspacePath={workspacePath}`
+
 Server entrypoint:
 
 - [server/pantheon/mcp-server.js](./server/pantheon/mcp-server.js)
@@ -172,6 +184,13 @@ The current direction is:
 
 - Terminal agents: prefer `pantheon_handoff`
 - Web UI sessions: text-based end-of-reply handoff parsing remains available as a fallback
+
+The readable MCP resources are intended for inspection, not mutation:
+
+- use `pantheon://state` for structured workspace coordination state
+- use `pantheon://whiteboard` for the rendered markdown snapshot
+- use `pantheon://events` for recent Pantheon event history
+- use `pantheon://sessions` for currently registered sessions in a workspace
 
 ## Current Limits
 
