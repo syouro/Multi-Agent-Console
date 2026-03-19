@@ -10,7 +10,7 @@ A browser UI for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) a
   <a href="https://github.com/siteboon/claudecodeui">Upstream Project</a> · <a href="https://github.com/siteboon/claudecodeui/issues">Upstream Issues</a> · <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-<div align="right"><i><b>English</b> · <a href="./README.ko.md">한국어</a> · <a href="./README.zh-CN.md">中文</a> · <a href="./README.ja.md">日本語</a></i></div>
+<div align="right"><i><b>English</b> · <a href="./README.zh-CN.md">中文</a> ·</i></div>
 
 ## Status
 
