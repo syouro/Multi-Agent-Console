@@ -10,7 +10,7 @@
   <a href="https://github.com/siteboon/claudecodeui">上游项目</a> · <a href="https://github.com/siteboon/claudecodeui/issues">上游 Issues</a> · <a href="CONTRIBUTING.md">贡献指南</a>
 </p>
 
-<div align="right"><i><a href="./README.md">English</a> · <a href="./README.ko.md">한국어</a> · <a href="./README.ja.md">日本語</a></i></div>
+<div align="right"><i><a href="./README.md">English</a> </i></div>
 
 ## 当前状态
 
